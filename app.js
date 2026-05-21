@@ -106,13 +106,40 @@ function getSheet(wb, exactName, fallbackKeyword) {
 }
 
 function rowsFromSheet(ws) {
-  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+  // range: 0을 넣어야 엑셀의 실제 A열/1행 기준 위치가 유지됩니다.
+  // 이 옵션이 없으면 SheetJS가 C5부터 데이터를 시작으로 판단해서
+  // C열, E열, H열 같은 고정 컬럼 기준이 밀릴 수 있습니다.
+  return XLSX.utils.sheet_to_json(ws, {
+    header: 1,
+    raw: true,
+    defval: null,
+    blankrows: true,
+    range: 0,
+  });
+}
+
+function findRowIndex(rows, predicate, maxScan = rows.length) {
+  const limit = Math.min(rows.length, maxScan);
+  for (let i = 0; i < limit; i += 1) {
+    if (predicate(rows[i] || [])) return i;
+  }
+  return -1;
 }
 
 function parseZeniel(wb) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = rowsFromSheet(ws);
-  const header = rows[4] || [];
+
+  const headerIndex = findRowIndex(rows, row => {
+    const joined = row.map(safeText).join("|");
+    return joined.includes("B2C경로그룹") && /^\d{2}Y\d{2}M\d{2}D$/.test(safeText(row[8]));
+  }, 30);
+
+  if (headerIndex < 0) {
+    throw new Error("제니엘 파일에서 헤더 행을 찾지 못했습니다. C열 B2C경로그룹 / I열 26Y05M01D 구조인지 확인하세요.");
+  }
+
+  const header = rows[headerIndex] || [];
   const dateCols = [];
 
   header.forEach((value, idx) => {
@@ -130,7 +157,7 @@ function parseZeniel(wb) {
   let includedAmountRows = 0;
   let amountRows = 0;
 
-  rows.slice(5).forEach(row => {
+  rows.slice(headerIndex + 1).forEach(row => {
     if (safeText(row[2]) !== "코스트코") return;
     costcoRows += 1;
 
@@ -168,6 +195,7 @@ function parseZeniel(wb) {
       costcoRows,
       amountRows,
       includedAmountRows,
+      headerRowExcel: headerIndex + 1,
       dateCols: dateCols.length,
       firstDate: safeText(header[dateCols[0]]),
       lastDate: safeText(header[dateCols[dateCols.length - 1]]),
@@ -188,14 +216,16 @@ function monthLabelFromInput(ym) {
 function parseMx(wb, selectedMonth) {
   const ws = getSheet(wb, "매장별 셀인_26년(금액)", "매장별셀인_26년(금액)");
   const rows = rowsFromSheet(ws);
-  const monthRow = rows[7] || [];
   const targetLabel = monthLabelFromInput(selectedMonth);
-  const monthCol = monthRow.findIndex(value => safeText(value) === targetLabel);
 
-  if (monthCol < 0) {
-    const available = monthRow.filter(Boolean).map(safeText).join(", ");
-    throw new Error(`MX 파일 8행에서 ${targetLabel} 컬럼을 찾지 못했습니다. 현재 확인 가능한 월: ${available}`);
+  const monthRowIndex = findRowIndex(rows, row => row.some(value => safeText(value) === targetLabel), 30);
+  if (monthRowIndex < 0) {
+    const preview = rows.slice(0, 30).flat().filter(Boolean).map(safeText).filter(v => /^'\d{2}\.\d+월$/.test(v)).join(", ");
+    throw new Error(`MX 파일에서 ${targetLabel} 컬럼을 찾지 못했습니다. 현재 확인 가능한 월: ${preview || "없음"}`);
   }
+
+  const monthRow = rows[monthRowIndex] || [];
+  const monthCol = monthRow.findIndex(value => safeText(value) === targetLabel);
 
   const mxByStore = makeEmptyStoreMap();
   const mxByStoreCat = makeEmptyStoreCategoryMap();
@@ -203,7 +233,7 @@ function parseMx(wb, selectedMonth) {
   let currentStore = "";
   let includedRows = 0;
 
-  rows.slice(9).forEach(row => {
+  rows.slice(monthRowIndex + 2).forEach(row => {
     if (row[6]) currentStore = normalizeStore(row[6]);
     if (!currentStore) return;
 
@@ -228,6 +258,7 @@ function parseMx(wb, selectedMonth) {
     mxByStoreCat,
     stats: {
       targetLabel,
+      monthRowExcel: monthRowIndex + 1,
       monthColExcel: XLSX.utils.encode_col(monthCol),
       includedRows,
       unknownStores,
@@ -400,10 +431,12 @@ function buildCheckSheet(parsed, selectedMonth) {
     ["제니엘", "C열 코스트코 행 수", zenielStats.costcoRows],
     ["제니엘", "H열 금액 행 수", zenielStats.amountRows],
     ["제니엘", "최종 반영 금액 행 수", zenielStats.includedAmountRows],
+    ["제니엘", "헤더 행", zenielStats.headerRowExcel],
     ["제니엘", "합산 일자 수", zenielStats.dateCols],
     ["제니엘", "첫 일자", zenielStats.firstDate],
     ["제니엘", "마지막 일자", zenielStats.lastDate],
     ["MX", "선택 월 라벨", mxStats.targetLabel],
+    ["MX", "선택 월 행", mxStats.monthRowExcel],
     ["MX", "선택 월 컬럼", mxStats.monthColExcel],
     ["MX", "반영 품목 행 수", mxStats.includedRows],
     ["목표", "CC 목표 반영 점포 수", goalStats.includedRows],
