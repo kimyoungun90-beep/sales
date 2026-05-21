@@ -31,7 +31,7 @@ function toNumber(value) {
 function pct(actual, target) {
   const t = toNumber(target);
   if (!t) return null;
-  return toNumber(actual) / t;
+  return (toNumber(actual) / t) * 100;
 }
 
 function safeText(value) {
@@ -349,11 +349,11 @@ function buildReportAoA(parsed, selectedMonth) {
 
   const header = [
     "담당", "점포",
-    "CE 목표", "CE 실적", "CE 달성률",
+    "CE 목표", "CE 실적", "CE 달성률(%)",
     ...ceCats.map(cat => `CE_${cat}`),
-    "MX 목표", "MX 실적", "MX 달성률",
+    "MX 목표", "MX 실적", "MX 달성률(%)",
     ...MX_OUTPUT_CATS.map(cat => `MX_${cat}`),
-    "전체 목표", "전체 실적", "전체 달성률",
+    "전체 목표", "전체 실적", "전체 달성률(%)",
   ];
 
   const title = [`코스트코 CE/MX 실적 자동 취합 보고`];
@@ -478,63 +478,26 @@ function buildCheckSheet(parsed, selectedMonth) {
 }
 
 function styleSheet(ws, aoa, options = {}) {
-  // Excel 안정성을 위해 복잡한 셀 스타일은 최소화합니다.
-  // 일부 PC에서 xlsx-js-style로 생성한 진한 스타일/테두리 파일이 열릴 때 멈추는 사례가 있어
-  // 숫자 표시 형식과 열 너비 중심으로만 적용합니다.
-  if (!ws["!ref"]) return;
-  const range = XLSX.utils.decode_range(ws["!ref"]);
-  const headerRow = options.headerRow ?? 0;
-  const percentColumns = options.percentColumns || [];
-  const amountStartCol = options.amountStartCol ?? 2;
-
-  for (let r = range.s.r; r <= range.e.r; r += 1) {
-    for (let c = range.s.c; c <= range.e.c; c += 1) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = ws[addr];
-      if (!cell) continue;
-      if (r > headerRow && c >= amountStartCol && typeof cell.v === "number") {
-        cell.z = percentColumns.includes(c) ? "0.0%" : "#,##0.0";
-      }
-    }
-  }
-}
-
-function borderAll(color) {
-  return {
-    top: { style: "thin", color: { rgb: color } },
-    bottom: { style: "thin", color: { rgb: color } },
-    left: { style: "thin", color: { rgb: color } },
-    right: { style: "thin", color: { rgb: color } },
-  };
+  // 진단 안정 버전: Excel 충돌 원인을 분리하기 위해 스타일/표시형식/필터/테두리를 전부 제외합니다.
+  // 값만 들어간 가장 단순한 XLSX를 생성합니다.
+  return;
 }
 
 function addSheet(wb, name, aoa, options = {}) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // 열 너비만 지정합니다. 병합/필터/스타일은 Excel 응답없음 원인 분리를 위해 제외합니다.
   const colCount = Math.max(...aoa.map(row => row.length));
   ws["!cols"] = Array.from({ length: colCount }, (_, idx) => {
-    if (idx === 0) return { wch: 13 };
-    if (idx === 1) return { wch: 13 };
-    return { wch: options.compact ? 12 : 13 };
+    if (idx === 0) return { wch: 14 };
+    if (idx === 1) return { wch: 12 };
+    return { wch: 12 };
   });
 
-  if (options.mergeTitle) {
-    ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
-  }
-
-  // 필터는 Excel 버전에 따라 열림 지연을 만들 수 있어 생성 파일 안정성을 우선해 제외합니다.
-  styleSheet(ws, aoa, options);
   XLSX.utils.book_append_sheet(wb, ws, name);
 }
-
 function makeWorkbook(parsed, selectedMonth) {
   const wb = XLSX.utils.book_new();
-  wb.Props = {
-    Title: "코스트코 CE/MX 실적 자동 취합 보고",
-    Subject: "Costco CE MX Sales Auto Report",
-    Author: "자동취합 웹앱",
-    CreatedDate: new Date(),
-  };
-
   const report = buildReportAoA(parsed, selectedMonth);
   const detail = buildDetailSheets(parsed);
   const checkAoa = buildCheckSheet(parsed, selectedMonth);
@@ -635,8 +598,8 @@ async function run() {
     const outputName = safeText($("#outputName").value) || "코스트코_CE_MX_실적_자동취합.xlsx";
     XLSX.writeFile(outWb, outputName.endsWith(".xlsx") ? outputName : `${outputName}.xlsx`, {
       bookType: "xlsx",
-      bookSST: true,
-      compression: true,
+      bookSST: false,
+      compression: false,
     });
 
     const ceTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.ceByStore[store]), 0);
