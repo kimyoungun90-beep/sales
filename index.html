@@ -10,9 +10,9 @@
   <main class="wrap">
     <section class="hero">
       <div>
-        <p class="eyebrow">Costco Sales Auto Report</p>
+        <p class="eyebrow">Zeniel Costco Sales Auto Report</p>
         <h1>코스트코 CE/MX 실적 자동 취합 웹앱</h1>
-        <p class="desc">제니엘 실적 데이터, MX SI 실적, 26.5월 점별 목표 파일을 업로드하면 보고용 엑셀을 자동 생성합니다.</p>
+        <p class="desc">제니엘 실적 데이터, MX SI 실적, 26.5월 점별 목표 파일을 업로드하면 보고용 요약·품목별·보고멘트 시트를 자동 생성합니다.</p>
       </div>
       <div class="badge">단위: 백만원</div>
     </section>
@@ -22,7 +22,7 @@
       <div class="grid">
         <label class="upload-card">
           <span class="label-title">① 제니엘 실적 데이터</span>
-          <span class="label-desc">C열 코스트코 / E열 점포 / F열 품목 / H열 금액 / I열 이후 일자별 금액</span>
+          <span class="label-desc">B2C경로그룹 / 대표거래선 / 품목 / 모델 / 메져_구분 / 일자별 금액 자동 인식</span>
           <input id="zenielFile" type="file" accept=".xlsx,.xls" />
         </label>
 
@@ -65,30 +65,29 @@
       <h2>적용 기준</h2>
       <div class="rules">
         <div>
-          <h3>제니엘 실적</h3>
+          <h3>보고용 요약</h3>
           <ul>
-            <li>C열이 “코스트코”인 행만 사용</li>
-            <li>평택물류창고, CDC온라인창고, 코스트코 코리아 제외</li>
-            <li>H열 “금액”만 합산, 수량 제외</li>
-            <li>웨어러블, PC, 모바일, 태블릿, 스마트폰/휴대폰/자급제폰 제외</li>
+            <li>총 목표/총 실적/총 달성률 → CE → MX 순서</li>
+            <li>점포별 총/CE/MX 매출 및 달성률 순위 자동 산출</li>
+            <li>담당별 “총 매출” 행은 색상과 테두리로 구분</li>
           </ul>
         </div>
         <div>
-          <h3>MX SI 실적</h3>
+          <h3>보고멘트</h3>
           <ul>
-            <li>“매장별 셀인_26년(금액)” 시트 사용</li>
-            <li>8행에서 선택 월 컬럼 자동 탐색</li>
-            <li>자급제폰→휴대폰, 웨어러블, 태블릿, PC 품목별 집계</li>
+            <li>점포별 전체/CE/MX 현황 자동 문장 생성</li>
+            <li>CE 주요 품목과 대표 모델 자동 추출</li>
+            <li>부진 품목은 데이터 기준으로 점검 포인트 표시</li>
           </ul>
         </div>
         <div>
           <h3>담당 구분</h3>
           <ul>
-            <li>조재현K: 양재/광명/공세/평택</li>
-            <li>김현래K: 상봉/하남/양평/의정부</li>
-            <li>윤재경K: 일산/송도/고척/청라/천안</li>
-            <li>김영언K: 세종/대전/대구/혁신</li>
-            <li>심창보D: 부산/울산/김해</li>
+            <li>조재현: 양재/광명/공세/평택</li>
+            <li>김현래: 상봉/하남/양평/의정부</li>
+            <li>윤재경: 일산/송도/고척/청라/천안</li>
+            <li>김영언: 세종/대전/대구/혁신</li>
+            <li>심창보: 부산/울산/김해</li>
           </ul>
         </div>
       </div>
@@ -96,6 +95,7 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
