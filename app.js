@@ -126,20 +126,39 @@ function findRowIndex(rows, predicate, maxScan = rows.length) {
   return -1;
 }
 
+function findHeaderIndexAndMap(rows, requiredLabels, maxScan = 80) {
+  for (let i = 0; i < Math.min(rows.length, maxScan); i += 1) {
+    const row = rows[i] || [];
+    const map = {};
+    row.forEach((value, idx) => {
+      const text = safeText(value);
+      if (text) map[text] = idx;
+    });
+
+    const hasAll = requiredLabels.every(label => map[label] !== undefined);
+    if (hasAll) return { headerIndex: i, columnMap: map, header: row };
+  }
+  return { headerIndex: -1, columnMap: {}, header: [] };
+}
+
 function parseZeniel(wb) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = rowsFromSheet(ws);
 
-  const headerIndex = findRowIndex(rows, row => {
-    const joined = row.map(safeText).join("|");
-    return joined.includes("B2C경로그룹") && /^\d{2}Y\d{2}M\d{2}D$/.test(safeText(row[8]));
-  }, 30);
-
+  // 중요: 제니엘 원본은 실제 데이터가 C열부터 시작하는 경우가 있어
+  // SheetJS가 A/B 빈 열을 생략해서 row[2] 같은 고정 인덱스가 깨질 수 있습니다.
+  // 그래서 C/E/F/H 고정 위치가 아니라 헤더명으로 컬럼을 찾습니다.
+  const found = findHeaderIndexAndMap(rows, ["B2C경로그룹", "대표거래선", "품목", "메져_구분"], 80);
+  const headerIndex = found.headerIndex;
   if (headerIndex < 0) {
-    throw new Error("제니엘 파일에서 헤더 행을 찾지 못했습니다. C열 B2C경로그룹 / I열 26Y05M01D 구조인지 확인하세요.");
+    throw new Error("제니엘 파일에서 헤더 행을 찾지 못했습니다. B2C경로그룹 / 대표거래선 / 품목 / 메져_구분 헤더가 있는지 확인하세요.");
   }
 
-  const header = rows[headerIndex] || [];
+  const header = found.header;
+  const idxRoute = found.columnMap["B2C경로그룹"];
+  const idxStore = found.columnMap["대표거래선"];
+  const idxCategory = found.columnMap["품목"];
+  const idxMeasure = found.columnMap["메져_구분"];
   const dateCols = [];
 
   header.forEach((value, idx) => {
@@ -158,10 +177,10 @@ function parseZeniel(wb) {
   let amountRows = 0;
 
   rows.slice(headerIndex + 1).forEach(row => {
-    if (safeText(row[2]) !== "코스트코") return;
+    if (safeText(row[idxRoute]) !== "코스트코") return;
     costcoRows += 1;
 
-    const rawStore = row[4];
+    const rawStore = row[idxStore];
     if (isExcludedZenielStore(rawStore)) {
       excludedStores[safeText(rawStore)] = (excludedStores[safeText(rawStore)] || 0) + 1;
       return;
@@ -173,10 +192,10 @@ function parseZeniel(wb) {
       return;
     }
 
-    if (safeText(row[7]) !== "금액") return;
+    if (safeText(row[idxMeasure]) !== "금액") return;
     amountRows += 1;
 
-    const category = safeText(row[5]) || "기타";
+    const category = safeText(row[idxCategory]) || "기타";
     if (isZenielMxCategory(category)) {
       excludedCategories[category] = (excludedCategories[category] || 0) + 1;
       return;
@@ -185,7 +204,7 @@ function parseZeniel(wb) {
     const amount = dateCols.reduce((sum, colIdx) => sum + toNumber(row[colIdx]), 0);
     ceByStore[store] += amount;
     addToNested(ceByStoreCat, store, category, amount);
-    includedAmountRows += 1;
+    if (amount !== 0) includedAmountRows += 1;
   });
 
   return {
@@ -196,6 +215,10 @@ function parseZeniel(wb) {
       amountRows,
       includedAmountRows,
       headerRowExcel: headerIndex + 1,
+      routeCol: XLSX.utils.encode_col(idxRoute),
+      storeCol: XLSX.utils.encode_col(idxStore),
+      categoryCol: XLSX.utils.encode_col(idxCategory),
+      measureCol: XLSX.utils.encode_col(idxMeasure),
       dateCols: dateCols.length,
       firstDate: safeText(header[dateCols[0]]),
       lastDate: safeText(header[dateCols[dateCols.length - 1]]),
@@ -432,6 +455,7 @@ function buildCheckSheet(parsed, selectedMonth) {
     ["제니엘", "H열 금액 행 수", zenielStats.amountRows],
     ["제니엘", "최종 반영 금액 행 수", zenielStats.includedAmountRows],
     ["제니엘", "헤더 행", zenielStats.headerRowExcel],
+    ["제니엘", "경로/점포/품목/금액 컬럼", `${zenielStats.routeCol}/${zenielStats.storeCol}/${zenielStats.categoryCol}/${zenielStats.measureCol}`],
     ["제니엘", "합산 일자 수", zenielStats.dateCols],
     ["제니엘", "첫 일자", zenielStats.firstDate],
     ["제니엘", "마지막 일자", zenielStats.lastDate],
@@ -454,64 +478,22 @@ function buildCheckSheet(parsed, selectedMonth) {
 }
 
 function styleSheet(ws, aoa, options = {}) {
+  // Excel 안정성을 위해 복잡한 셀 스타일은 최소화합니다.
+  // 일부 PC에서 xlsx-js-style로 생성한 진한 스타일/테두리 파일이 열릴 때 멈추는 사례가 있어
+  // 숫자 표시 형식과 열 너비 중심으로만 적용합니다.
+  if (!ws["!ref"]) return;
   const range = XLSX.utils.decode_range(ws["!ref"]);
   const headerRow = options.headerRow ?? 0;
-  const titleRows = options.titleRows || [];
   const percentColumns = options.percentColumns || [];
   const amountStartCol = options.amountStartCol ?? 2;
 
-  const titleStyle = {
-    font: { bold: true, sz: 16, color: { rgb: "FFFFFF" } },
-    fill: { fgColor: { rgb: "0F172A" } },
-    alignment: { horizontal: "left", vertical: "center" },
-  };
-  const headerStyle = {
-    font: { bold: true, color: { rgb: "FFFFFF" } },
-    fill: { fgColor: { rgb: "1D4ED8" } },
-    alignment: { horizontal: "center", vertical: "center", wrapText: true },
-    border: borderAll("BFD3F2"),
-  };
-  const subtotalStyle = {
-    font: { bold: true, color: { rgb: "0F172A" } },
-    fill: { fgColor: { rgb: "DBEAFE" } },
-    border: borderAll("BFD3F2"),
-  };
-  const totalStyle = {
-    font: { bold: true, color: { rgb: "FFFFFF" } },
-    fill: { fgColor: { rgb: "0F766E" } },
-    border: borderAll("BFD3F2"),
-  };
-  const bodyStyle = {
-    alignment: { horizontal: "center", vertical: "center" },
-    border: borderAll("E2E8F0"),
-  };
-
-  for (let r = range.s.r; r <= range.e.r; r++) {
-    for (let c = range.s.c; c <= range.e.c; c++) {
+  for (let r = range.s.r; r <= range.e.r; r += 1) {
+    for (let c = range.s.c; c <= range.e.c; c += 1) {
       const addr = XLSX.utils.encode_cell({ r, c });
-      if (!ws[addr]) continue;
-      ws[addr].s = { ...bodyStyle };
-
-      if (titleRows.includes(r)) ws[addr].s = { ...titleStyle };
-      if (r === headerRow) ws[addr].s = { ...headerStyle };
-
-      if (r > headerRow && c >= amountStartCol && typeof ws[addr].v === "number") {
-        ws[addr].z = percentColumns.includes(c) ? "0.0%" : "#,##0.0";
-      }
-    }
-
-    const firstCell = ws[XLSX.utils.encode_cell({ r, c: 0 })];
-    const firstValue = safeText(firstCell?.v);
-    if (firstValue.endsWith("소계")) {
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        if (ws[addr]) ws[addr].s = { ...subtotalStyle };
-      }
-    }
-    if (firstValue === "전체 합계") {
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        if (ws[addr]) ws[addr].s = { ...totalStyle };
+      const cell = ws[addr];
+      if (!cell) continue;
+      if (r > headerRow && c >= amountStartCol && typeof cell.v === "number") {
+        cell.z = percentColumns.includes(c) ? "0.0%" : "#,##0.0";
       }
     }
   }
@@ -539,12 +521,7 @@ function addSheet(wb, name, aoa, options = {}) {
     ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } }];
   }
 
-  if (options.autoFilterRow !== undefined) {
-    ws["!autofilter"] = {
-      ref: XLSX.utils.encode_range({ s: { r: options.autoFilterRow, c: 0 }, e: { r: aoa.length - 1, c: colCount - 1 } }),
-    };
-  }
-
+  // 필터는 Excel 버전에 따라 열림 지연을 만들 수 있어 생성 파일 안정성을 우선해 제외합니다.
   styleSheet(ws, aoa, options);
   XLSX.utils.book_append_sheet(wb, ws, name);
 }
@@ -656,7 +633,11 @@ async function run() {
 
     const outWb = makeWorkbook(parsed, selectedMonth);
     const outputName = safeText($("#outputName").value) || "코스트코_CE_MX_실적_자동취합.xlsx";
-    XLSX.writeFile(outWb, outputName.endsWith(".xlsx") ? outputName : `${outputName}.xlsx`);
+    XLSX.writeFile(outWb, outputName.endsWith(".xlsx") ? outputName : `${outputName}.xlsx`, {
+      bookType: "xlsx",
+      bookSST: true,
+      compression: true,
+    });
 
     const ceTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.ceByStore[store]), 0);
     const mxTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.mxByStore[store]), 0);
