@@ -53,7 +53,7 @@ h1 { margin: 0; font-size: clamp(28px, 4vw, 44px); line-height: 1.12; }
   box-shadow: 0 10px 28px rgba(15, 23, 42, .06);
 }
 h2 { margin: 0 0 16px; font-size: 20px; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 14px; }
 .upload-card {
   min-height: 154px;
   border: 1px dashed #9db2d2;
@@ -67,6 +67,8 @@ h2 { margin: 0 0 16px; font-size: 20px; }
   transition: .16s ease;
 }
 .upload-card:hover { border-color: var(--blue); transform: translateY(-1px); }
+.optional-card { background: #f7fffb; border-color: #9fd6c7; }
+.label-title em { font-style: normal; font-size: 12px; color: var(--green); margin-left: 4px; }
 .label-title { display: block; font-weight: 800; font-size: 16px; }
 .label-desc { display: block; color: var(--muted); font-size: 13px; line-height: 1.45; margin-top: 7px; }
 input[type="file"] { width: 100%; }

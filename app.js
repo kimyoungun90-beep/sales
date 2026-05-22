@@ -131,35 +131,154 @@ function isAirconCategory(category) {
   return safeText(category).replace(/\s+/g, "") === "에어컨";
 }
 
-function deriveAirconSetModel(model) {
-  const m = safeText(model).replace(/\s+/g, "").toUpperCase();
+function normalizeModelCode(model) {
+  return safeText(model).replace(/\s+/g, "").toUpperCase();
+}
+
+function looksLikeModelCode(value) {
+  const m = normalizeModelCode(value);
+  return /^[A-Z0-9-]{5,}$/.test(m) && /\d/.test(m);
+}
+
+function isAirconSetName(model) {
+  const m = normalizeModelCode(model);
+  if (!m) return false;
+  // 사용자가 준 세트명 예시:
+  // AF60F17D11WT / AF60F17D11WRT / AF80F17D21CT / AF80F19D24CRT / AR60F07D12WT / AW05C7155WWAZ
+  return (
+    /^AF[A-Z0-9]+(?:WT|WRT|CT|CRT|RT)$/.test(m) ||
+    /^AR[A-Z0-9]+WT$/.test(m) ||
+    /^AW[A-Z0-9]+WWAZ$/.test(m)
+  );
+}
+
+function fallbackAirconSetModel(model) {
+  const m = normalizeModelCode(model);
   if (!m) return "";
+  if (isAirconSetName(m)) return m;
 
-  // 삼성 스탠드 실내기 표기 예: AF60F17D11WN -> 세트명 AF60F17D11WRT
-  // AF80F19D25BN -> AF80F19D25BRT 형태로 보고용 표기
-  const stand = m.match(/^(AF\d{2}[A-Z]\d{2}D\d{2})([A-Z])N$/);
-  if (stand) return `${stand[1]}${stand[2]}RT`;
+  // 상품DB 없이도 명확한 일부 모델만 보정합니다.
+  // 벽걸이 단품: AR60F07D12WNKO -> AR60F07D12WT
+  const wall = m.match(/^(AR\d{2}[A-Z]\d{2}D\d{2})WNKO$/);
+  if (wall) return `${wall[1]}WT`;
 
-  // 이미 세트명으로 들어온 경우는 그대로 사용
-  if (/^AF\d{2}[A-Z]\d{2}D\d{2}[A-Z]RT$/.test(m)) return m;
+  // 창문형: AW06C7155WWA -> AW06C7155WWAZ 처럼 Z만 빠진 경우 보정
+  if (/^AW[A-Z0-9]+WWA$/.test(m)) return `${m}Z`;
 
+  // AF 실내기 WN/CN 등은 WT/WRT/CT/CRT 구분이 상품DB 없이는 불가능할 수 있어
+  // 임의 변환하지 않고 원 모델로 남깁니다.
   return "";
 }
 
-function isAirconComponentModel(model) {
-  const m = safeText(model).replace(/\s+/g, "").toUpperCase();
-  if (!m) return false;
-  return /^(FPC|FRC|AFR|ARR|AIR|AIP)/.test(m) || /^AF\d{2}[A-Z]\d{2}D\d[A-Z]BX$/.test(m);
+function parseAirconSetLookup(wb) {
+  const lookup = {};
+  const qtyBase = {};
+  const setNames = {};
+  const duplicates = {};
+  const ambiguous = {};
+  let setRows = 0;
+  let componentRows = 0;
+  let simpleMapRows = 0;
+  let currentSet = "";
+  let firstComponentForCurrentSet = false;
+
+  const addMapping = (component, setModel, markQtyBase = false) => {
+    const comp = normalizeModelCode(component);
+    const set = normalizeModelCode(setModel);
+    if (!comp || !set) return;
+    if (!lookup[comp]) {
+      lookup[comp] = set;
+    } else if (lookup[comp] !== set) {
+      duplicates[comp] = duplicates[comp] || new Set([lookup[comp]]);
+      duplicates[comp].add(set);
+      ambiguous[comp] = true;
+    }
+    if (markQtyBase) {
+      if (!qtyBase[comp]) qtyBase[comp] = set;
+      else if (qtyBase[comp] !== set) ambiguous[comp] = true;
+    }
+  };
+
+  if (!wb) {
+    return { lookup, qtyBase, setNames, ambiguous, stats: { used: false, setRows, componentRows, simpleMapRows, duplicateRows: 0 } };
+  }
+
+  wb.SheetNames.forEach(sheetName => {
+    const rows = rowsFromSheet(wb.Sheets[sheetName]);
+    rows.forEach(row => {
+      const colA = normalizeModelCode(row[0]);
+      const colB = normalizeModelCode(row[1]);
+      const colC = normalizeModelCode(row[2]);
+      const rowText = row.map(v => safeText(v)).join(" ");
+      if (!looksLikeModelCode(colA)) return;
+
+      // ① 단순 매핑표 형태: A열 구성모델 / B열 또는 C열 세트명
+      const explicitSet = [colB, colC].find(v => isAirconSetName(v));
+      if (explicitSet && colA !== explicitSet) {
+        addMapping(colA, explicitSet, true);
+        setNames[explicitSet] = true;
+        simpleMapRows += 1;
+        return;
+      }
+
+      // ② 사용자가 보여준 상품DB 형태: 세트명 행 아래 구성품 행이 이어지는 구조
+      //    세트명 행 예: AF60F17D11WT / AF60F17D11WRT / AF80F17D21CT / AF80F19D24CRT / AR60F07D12WT / AW05C7155WWAZ
+      if (isAirconSetName(colA) || /세트명|스탠드\s*단품|스탠드\s*\+|벽걸이\s*단품|창문형/.test(rowText)) {
+        currentSet = colA;
+        firstComponentForCurrentSet = true;
+        setNames[currentSet] = true;
+        addMapping(currentSet, currentSet, true);
+        setRows += 1;
+        return;
+      }
+
+      // ③ 세트명 아래 구성품 행: 스탠드명, 실외기명, 벽걸이명, 자재, 리모컨, 설치비 등
+      if (currentSet && /스탠드|실외기|벽걸이|자재|리모컨|설치비|배관|가스|에어컨|엑셀\s*표기/.test(rowText)) {
+        addMapping(colA, currentSet, firstComponentForCurrentSet);
+        firstComponentForCurrentSet = false;
+        componentRows += 1;
+      }
+    });
+  });
+
+  const duplicateRows = Object.keys(ambiguous).length;
+  const duplicateList = Object.fromEntries(
+    Object.entries(duplicates).map(([model, sets]) => [model, Array.from(sets).join(", ")])
+  );
+
+  return {
+    lookup,
+    qtyBase,
+    setNames,
+    ambiguous,
+    duplicateList,
+    stats: { used: true, setRows, componentRows, simpleMapRows, duplicateRows },
+  };
 }
 
-function resolveAirconSetModel(store, model, currentAirconSetByStore) {
-  const direct = deriveAirconSetModel(model);
-  if (direct) {
-    currentAirconSetByStore[store] = direct;
-    return direct;
-  }
-  if (isAirconComponentModel(model) && currentAirconSetByStore[store]) return currentAirconSetByStore[store];
-  return safeText(model) || "모델 미기재";
+function resolveAirconSetModel(model, airconLookupData = null) {
+  const m = normalizeModelCode(model);
+  if (!m) return "모델 미기재";
+
+  const data = airconLookupData || { lookup: {}, ambiguous: {} };
+  if (isAirconSetName(m)) return m;
+  if (data.ambiguous?.[m]) return `${m} (세트명 중복확인)`;
+  if (data.lookup?.[m]) return data.lookup[m];
+
+  return fallbackAirconSetModel(m) || `${m} (세트명 미확인)`;
+}
+
+function isAirconQtyBaseModel(model, setModel, airconLookupData = null) {
+  const m = normalizeModelCode(model);
+  const set = normalizeModelCode(setModel);
+  const data = airconLookupData || { qtyBase: {}, ambiguous: {} };
+  if (!m || !set) return false;
+  if (isAirconSetName(m)) return true;
+  if (data.ambiguous?.[m]) return false;
+  if (data.qtyBase?.[m] && data.qtyBase[m] === set) return true;
+  // 상품DB 없이 명확히 단품으로 보정되는 벽걸이/창문형은 수량 기준으로 인정
+  const fallback = fallbackAirconSetModel(m);
+  return !!fallback && fallback === set;
 }
 
 function addToAirconSetMap(map, store, setModel, amount = 0, qty = 0) {
@@ -224,7 +343,7 @@ function findHeaderIndexAndMap(rows, requiredLabels, maxScan = 80) {
   return { headerIndex: -1, columnMap: {}, header: [] };
 }
 
-function parseZeniel(wb) {
+function parseZeniel(wb, airconLookupData = null) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = rowsFromSheet(ws);
   const found = findHeaderIndexAndMap(rows, ["B2C경로그룹", "대표거래선", "품목", "메져_구분"], 80);
@@ -251,7 +370,6 @@ function parseZeniel(wb) {
   const ceByStoreCat = makeEmptyStoreCategoryMap();
   const ceModelByStore = makeEmptyStoreModelMap();
   const airconSetByStore = makeEmptyStoreAirconSetMap();
-  const currentAirconSetByStore = {};
   const excludedStores = {};
   const excludedCategories = {};
   const unknownStores = {};
@@ -281,11 +399,11 @@ function parseZeniel(wb) {
     const model = idxModel === undefined ? "" : safeText(row[idxModel]);
     const rowTotal = dateCols.reduce((sum, colIdx) => sum + toNumber(row[colIdx]), 0);
 
-    // 에어컨은 모델_TOP/보고멘트에서 세트명 기준으로 보기 위해 수량·금액을 별도 집계
-    // 단, 전체 CE 매출 산식은 기존처럼 H열 금액만 반영한다.
+    // 에어컨은 모델_TOP/보고멘트에서 세트명 기준으로 보기 위해 수량·금액을 별도 집계합니다.
+    // 정확한 WT/WRT/CT/CRT 구분은 선택 업로드한 에어컨 세트 기준표가 있으면 그 기준을 우선 사용합니다.
     if (isAirconCategory(category)) {
-      const setModel = resolveAirconSetModel(store, model, currentAirconSetByStore);
-      if (measure === "수량" && deriveAirconSetModel(model)) {
+      const setModel = resolveAirconSetModel(model, airconLookupData);
+      if (measure === "수량" && isAirconQtyBaseModel(model, setModel, airconLookupData)) {
         addToAirconSetMap(airconSetByStore, store, setModel, 0, rowTotal);
         airconSetRows += 1;
       } else if (measure === "금액") {
@@ -303,7 +421,7 @@ function parseZeniel(wb) {
     }
 
     const amount = rowTotal;
-    const reportModel = isAirconCategory(category) ? resolveAirconSetModel(store, model, currentAirconSetByStore) : model;
+    const reportModel = isAirconCategory(category) ? resolveAirconSetModel(model, airconLookupData) : model;
     ceByStore[store] += amount;
     addToNested(ceByStoreCat, store, category, amount);
     addToModelMap(ceModelByStore, store, category, reportModel, amount);
@@ -736,7 +854,7 @@ function buildReportCommentAoa(parsed, storeRows) {
 }
 
 function buildCheckSheet(parsed, selectedMonth) {
-  const { zenielStats, mxStats, goalStats } = parsed;
+  const { zenielStats, mxStats, goalStats, airconLookupStats } = parsed;
   const aoa = [
     ["구분", "항목", "값"],
     ["기준", "MX 기준월", selectedMonth],
@@ -744,6 +862,10 @@ function buildCheckSheet(parsed, selectedMonth) {
     ["제니엘", "금액 행 수", zenielStats.amountRows],
     ["제니엘", "최종 반영 금액 행 수", zenielStats.includedAmountRows],
     ["제니엘", "에어컨 세트 집계 행 수", zenielStats.airconSetRows],
+    ["에어컨 기준표", "사용 여부", airconLookupStats?.used ? "사용" : "미사용"],
+    ["에어컨 기준표", "세트명 행 수", airconLookupStats?.setRows || 0],
+    ["에어컨 기준표", "구성품 매핑 행 수", airconLookupStats?.componentRows || 0],
+    ["에어컨 기준표", "중복 구성품 수", airconLookupStats?.duplicateRows || 0],
     ["제니엘", "헤더 행", zenielStats.headerRowExcel],
     ["제니엘", "경로/점포/품목/모델/금액 컬럼", `${zenielStats.routeCol}/${zenielStats.storeCol}/${zenielStats.categoryCol}/${zenielStats.modelCol}/${zenielStats.measureCol}`],
     ["제니엘", "합산 일자 수", zenielStats.dateCols],
@@ -764,6 +886,7 @@ function buildCheckSheet(parsed, selectedMonth) {
   Object.entries(zenielStats.unknownStores).forEach(([name, count]) => aoa.push(["제니엘 미매핑 점포", name, count]));
   Object.entries(mxStats.unknownStores).forEach(([name, count]) => aoa.push(["MX 미매핑 점포", name, count]));
   Object.entries(goalStats.unknownStores).forEach(([name, count]) => aoa.push(["목표 미매핑 점포", name, count]));
+  Object.entries(parsed.airconLookupDuplicateList || {}).forEach(([name, sets]) => aoa.push(["에어컨 세트 중복구성품", name, sets]));
 
   return aoa;
 }
@@ -992,6 +1115,26 @@ function readWorkbookFromInput(inputId) {
   });
 }
 
+function readOptionalWorkbookFromInput(inputId) {
+  const file = $(inputId).files?.[0];
+  if (!file) return Promise.resolve({ wb: null, fileName: "" });
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = event => {
+      try {
+        const data = new Uint8Array(event.target.result);
+        const wb = XLSX.read(data, { type: "array", cellDates: false, cellNF: false, cellStyles: false });
+        resolve({ wb, fileName: file.name });
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = () => reject(new Error(`${file.name} 파일을 읽지 못했습니다.`));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1057,13 +1200,15 @@ async function run() {
     const selectedMonth = $("#monthPicker").value;
     if (!selectedMonth) throw new Error("MX 기준월을 선택하세요.");
 
-    const [zeniel, mx, goal] = await Promise.all([
+    const [zeniel, mx, goal, airconMap] = await Promise.all([
       readWorkbookFromInput("#zenielFile"),
       readWorkbookFromInput("#mxFile"),
       readWorkbookFromInput("#goalFile"),
+      readOptionalWorkbookFromInput("#airconMapFile"),
     ]);
 
-    const zenielParsed = parseZeniel(zeniel.wb);
+    const airconLookupData = parseAirconSetLookup(airconMap.wb);
+    const zenielParsed = parseZeniel(zeniel.wb, airconLookupData);
     const mxParsed = parseMx(mx.wb, selectedMonth);
     const goalParsed = parseGoal(goal.wb);
 
@@ -1079,6 +1224,8 @@ async function run() {
       zenielStats: zenielParsed.stats,
       mxStats: mxParsed.stats,
       goalStats: goalParsed.stats,
+      airconLookupStats: airconLookupData.stats,
+      airconLookupDuplicateList: airconLookupData.duplicateList || {},
     };
 
     const previewRows = makeStoreRows(parsed);
@@ -1095,7 +1242,7 @@ async function run() {
     const mxTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.mxByStore[store]), 0);
 
     setStatus(
-      `완료되었습니다. CE ${ceTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원, MX ${mxTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원 기준으로 보고용 요약·보고멘트 시트를 생성했습니다.`,
+      `완료되었습니다. CE ${ceTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원, MX ${mxTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원 기준으로 보고용 요약·보고멘트 시트를 생성했습니다. 에어컨 세트 기준표: ${airconLookupData.stats.used ? "반영" : "미사용"}.`,
       "ok"
     );
   } catch (error) {
@@ -1105,7 +1252,7 @@ async function run() {
 }
 
 function clearAll() {
-  ["#zenielFile", "#mxFile", "#goalFile"].forEach(id => { $(id).value = ""; });
+  ["#zenielFile", "#mxFile", "#goalFile", "#airconMapFile"].forEach(id => { $(id).value = ""; });
   $("#monthPicker").value = "2026-05";
   $("#outputName").value = "코스트코_CE_MX_실적_자동취합.xlsx";
   setStatus("파일을 업로드한 뒤 생성 버튼을 누르세요.");

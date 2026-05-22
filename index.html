@@ -37,6 +37,12 @@
           <span class="label-desc">“매장별 목표” 시트의 CC 점포별 CE/MX 목표</span>
           <input id="goalFile" type="file" accept=".xlsx,.xls" />
         </label>
+
+        <label class="upload-card optional-card">
+          <span class="label-title">④ 에어컨 세트 기준표 <em>선택</em></span>
+          <span class="label-desc">AF60F17D11WT/WRT, AF80F17D21CT/CRT처럼 세트명과 구성품을 매핑하는 상품DB</span>
+          <input id="airconMapFile" type="file" accept=".xlsx,.xls" />
+        </label>
       </div>
     </section>
 
@@ -67,7 +73,7 @@
       <div class="preview-head">
         <div>
           <h2>매출 요약본</h2>
-          <p class="note">업로드한 3개 파일 기준으로 20개 점포의 총/CE/MX 목표·매출·달성률을 웹앱 화면에서 바로 확인합니다.</p>
+          <p class="note">업로드한 파일 기준으로 20개 점포의 총/CE/MX 목표·매출·달성률을 웹앱 화면에서 바로 확인합니다.</p>
         </div>
         <button id="copySummaryBtn" class="ghost small-btn" type="button">표 복사</button>
       </div>
@@ -90,6 +96,7 @@
           <ul>
             <li>점포별 전체/CE/MX 현황 자동 문장 생성</li>
             <li>CE 주요 품목과 대표 모델 자동 추출</li>
+            <li>에어컨 세트 기준표 업로드 시 WT/WRT/CT/CRT 세트명 기준 반영</li>
             <li>부진 품목은 데이터 기준으로 점검 포인트 표시</li>
           </ul>
         </div>
