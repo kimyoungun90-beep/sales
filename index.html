@@ -12,7 +12,7 @@
       <div>
         <p class="eyebrow">Zeniel Costco Sales Auto Report</p>
         <h1>코스트코 CE/MX 실적 자동 취합 웹앱</h1>
-        <p class="desc">제니엘 실적 데이터, MX SI 실적, 26.5월 점별 목표 파일을 업로드하면 보고용 요약·품목별·보고멘트 시트를 자동 생성합니다.</p>
+        <p class="desc">제니엘 실적 데이터, MX SI 실적, 목표 파일, 상품DB를 업로드하면 보고용 요약·보고멘트·에어컨 월 모델군 시트를 자동 생성합니다.</p>
       </div>
       <div class="badge">단위: 백만원</div>
     </section>
@@ -39,8 +39,8 @@
         </label>
 
         <label class="upload-card optional-card">
-          <span class="label-title">④ 에어컨 세트 기준표 <em>선택</em></span>
-          <span class="label-desc">AF60F17D11WT/WRT, AF80F17D21CT/CRT처럼 세트명과 구성품을 매핑하는 상품DB</span>
+          <span class="label-title">④ 에어컨 상품DB/모델군 기준표 <em>선택</em></span>
+          <span class="label-desc">Q9000/클래식/갤러리/벽걸이/창문형 모델군과 구성품을 매핑하는 상품DB</span>
           <input id="airconMapFile" type="file" accept=".xlsx,.xls" />
         </label>
       </div>
@@ -58,7 +58,7 @@
           <input id="outputName" type="text" value="코스트코_CE_MX_실적_자동취합.xlsx" />
         </label>
       </div>
-      <p class="note">제니엘 데이터는 파일 내 존재하는 일자 컬럼 전체를 합산합니다. 예: 26Y05M01D~26Y05M20D.</p>
+      <p class="note">제니엘 데이터는 파일 내 존재하는 일자 컬럼 전체를 월 단위로 합산합니다. 예: 26Y05M01D~26Y05M20D.</p>
     </section>
 
     <section class="panel action-panel">
@@ -96,7 +96,8 @@
           <ul>
             <li>점포별 전체/CE/MX 현황 자동 문장 생성</li>
             <li>CE 주요 품목과 대표 모델 자동 추출</li>
-            <li>에어컨 세트 기준표 업로드 시 WT/WRT/CT/CRT 세트명 기준 반영</li>
+            <li>에어컨 상품DB 업로드 시 Q9000/클래식/갤러리/벽걸이/창문형 모델군 기준으로 월 단위 반영</li>
+            <li>공용 자재·설치비·리모컨·벽걸이 금액은 스탠드/본품 판매수량 비율로 배분</li>
             <li>부진 품목은 데이터 기준으로 점검 포인트 표시</li>
           </ul>
         </div>
