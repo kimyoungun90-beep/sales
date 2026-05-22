@@ -122,6 +122,54 @@ function makeEmptyStoreModelMap() {
   return Object.fromEntries(STORE_LIST.map(store => [store, {}]));
 }
 
+
+function makeEmptyStoreAirconSetMap() {
+  return Object.fromEntries(STORE_LIST.map(store => [store, {}]));
+}
+
+function isAirconCategory(category) {
+  return safeText(category).replace(/\s+/g, "") === "에어컨";
+}
+
+function deriveAirconSetModel(model) {
+  const m = safeText(model).replace(/\s+/g, "").toUpperCase();
+  if (!m) return "";
+
+  // 삼성 스탠드 실내기 표기 예: AF60F17D11WN -> 세트명 AF60F17D11WRT
+  // AF80F19D25BN -> AF80F19D25BRT 형태로 보고용 표기
+  const stand = m.match(/^(AF\d{2}[A-Z]\d{2}D\d{2})([A-Z])N$/);
+  if (stand) return `${stand[1]}${stand[2]}RT`;
+
+  // 이미 세트명으로 들어온 경우는 그대로 사용
+  if (/^AF\d{2}[A-Z]\d{2}D\d{2}[A-Z]RT$/.test(m)) return m;
+
+  return "";
+}
+
+function isAirconComponentModel(model) {
+  const m = safeText(model).replace(/\s+/g, "").toUpperCase();
+  if (!m) return false;
+  return /^(FPC|FRC|AFR|ARR|AIR|AIP)/.test(m) || /^AF\d{2}[A-Z]\d{2}D\d[A-Z]BX$/.test(m);
+}
+
+function resolveAirconSetModel(store, model, currentAirconSetByStore) {
+  const direct = deriveAirconSetModel(model);
+  if (direct) {
+    currentAirconSetByStore[store] = direct;
+    return direct;
+  }
+  if (isAirconComponentModel(model) && currentAirconSetByStore[store]) return currentAirconSetByStore[store];
+  return safeText(model) || "모델 미기재";
+}
+
+function addToAirconSetMap(map, store, setModel, amount = 0, qty = 0) {
+  if (!map[store]) map[store] = {};
+  const key = safeText(setModel) || "세트명 미확인";
+  if (!map[store][key]) map[store][key] = { setModel: key, amount: 0, qty: 0 };
+  map[store][key].amount += toNumber(amount);
+  map[store][key].qty += toNumber(qty);
+}
+
 function addToNested(map, store, category, amount) {
   if (!map[store]) map[store] = {};
   if (!map[store][category]) map[store][category] = 0;
@@ -202,12 +250,15 @@ function parseZeniel(wb) {
   const ceByStore = makeEmptyStoreMap();
   const ceByStoreCat = makeEmptyStoreCategoryMap();
   const ceModelByStore = makeEmptyStoreModelMap();
+  const airconSetByStore = makeEmptyStoreAirconSetMap();
+  const currentAirconSetByStore = {};
   const excludedStores = {};
   const excludedCategories = {};
   const unknownStores = {};
   let costcoRows = 0;
   let includedAmountRows = 0;
   let amountRows = 0;
+  let airconSetRows = 0;
 
   rows.slice(headerIndex + 1).forEach(row => {
     if (safeText(row[idxRoute]) !== "코스트코") return;
@@ -225,20 +276,37 @@ function parseZeniel(wb) {
       return;
     }
 
-    if (safeText(row[idxMeasure]) !== "금액") return;
+    const category = safeText(row[idxCategory]) || "기타";
+    const measure = safeText(row[idxMeasure]);
+    const model = idxModel === undefined ? "" : safeText(row[idxModel]);
+    const rowTotal = dateCols.reduce((sum, colIdx) => sum + toNumber(row[colIdx]), 0);
+
+    // 에어컨은 모델_TOP/보고멘트에서 세트명 기준으로 보기 위해 수량·금액을 별도 집계
+    // 단, 전체 CE 매출 산식은 기존처럼 H열 금액만 반영한다.
+    if (isAirconCategory(category)) {
+      const setModel = resolveAirconSetModel(store, model, currentAirconSetByStore);
+      if (measure === "수량" && deriveAirconSetModel(model)) {
+        addToAirconSetMap(airconSetByStore, store, setModel, 0, rowTotal);
+        airconSetRows += 1;
+      } else if (measure === "금액") {
+        addToAirconSetMap(airconSetByStore, store, setModel, rowTotal, 0);
+        airconSetRows += 1;
+      }
+    }
+
+    if (measure !== "금액") return;
     amountRows += 1;
 
-    const category = safeText(row[idxCategory]) || "기타";
     if (isZenielMxCategory(category)) {
       excludedCategories[category] = (excludedCategories[category] || 0) + 1;
       return;
     }
 
-    const amount = dateCols.reduce((sum, colIdx) => sum + toNumber(row[colIdx]), 0);
-    const model = idxModel === undefined ? "" : safeText(row[idxModel]);
+    const amount = rowTotal;
+    const reportModel = isAirconCategory(category) ? resolveAirconSetModel(store, model, currentAirconSetByStore) : model;
     ceByStore[store] += amount;
     addToNested(ceByStoreCat, store, category, amount);
-    addToModelMap(ceModelByStore, store, category, model, amount);
+    addToModelMap(ceModelByStore, store, category, reportModel, amount);
     if (amount !== 0) includedAmountRows += 1;
   });
 
@@ -246,10 +314,12 @@ function parseZeniel(wb) {
     ceByStore,
     ceByStoreCat,
     ceModelByStore,
+    airconSetByStore,
     stats: {
       costcoRows,
       amountRows,
       includedAmountRows,
+      airconSetRows,
       headerRowExcel: headerIndex + 1,
       routeCol: XLSX.utils.encode_col(idxRoute),
       storeCol: XLSX.utils.encode_col(idxStore),
@@ -469,19 +539,25 @@ function addRanks(rows) {
 
 function buildSummaryAoA(parsed, selectedMonth) {
   const storeRows = makeStoreRows(parsed);
-  const header = [
+  const groupHeader = [
     "담당", "점포",
-    "총 목표", "총 실적", "총 달성률",
-    "CE 목표", "CE 실적", "CE 달성률",
-    "MX 목표", "MX 실적", "MX 달성률",
-    "총 매출 순위", "CE 매출 순위", "CE 달성률 순위", "총 매출 달성률 순위", "MX 매출 순위", "MX 달성률 순위",
+    "총 매출", "", "", "", "",
+    "CE 매출", "", "", "", "",
+    "MX 매출", "", "", "", "",
+  ];
+  const subHeader = [
+    "담당", "점포",
+    "목표", "매출", "순위", "달성률", "순위",
+    "목표", "매출", "순위", "달성률", "순위",
+    "목표", "매출", "순위", "달성률", "순위",
   ];
 
   const aoa = [
     ["코스트코 CE/MX 실적 자동 취합 보고"],
     [`기준월: ${selectedMonth}`, "단위: 백만원", `생성일시: ${new Date().toLocaleString("ko-KR")}`, "구성: 보고용 요약 / 보고멘트 / 품목별 / 검증로그"],
     [],
-    header,
+    groupHeader,
+    subHeader,
   ];
 
   STORE_GROUPS.forEach(group => {
@@ -489,10 +565,9 @@ function buildSummaryAoA(parsed, selectedMonth) {
     groupRows.forEach(row => {
       aoa.push([
         row.manager, row.store,
-        row.totalGoal, row.totalActual, row.totalRate,
-        row.ceGoal, row.ceActual, row.ceRate,
-        row.mxGoal, row.mxActual, row.mxRate,
-        row.totalSalesRank, row.ceSalesRank, row.ceRateRank, row.totalRateRank, row.mxSalesRank, row.mxRateRank,
+        row.totalGoal, row.totalActual, row.totalSalesRank, row.totalRate, row.totalRateRank,
+        row.ceGoal, row.ceActual, row.ceSalesRank, row.ceRate, row.ceRateRank,
+        row.mxGoal, row.mxActual, row.mxSalesRank, row.mxRate, row.mxRateRank,
       ]);
     });
 
@@ -505,10 +580,9 @@ function buildSummaryAoA(parsed, selectedMonth) {
 
     aoa.push([
       group.manager, "총 매출",
-      totalGoal, totalActual, rate(totalActual, totalGoal),
-      ceGoal, ceActual, rate(ceActual, ceGoal),
-      mxGoal, mxActual, rate(mxActual, mxGoal),
-      "", "", "", "", "", "",
+      totalGoal, totalActual, "", rate(totalActual, totalGoal), "",
+      ceGoal, ceActual, "", rate(ceActual, ceGoal), "",
+      mxGoal, mxActual, "", rate(mxActual, mxGoal), "",
     ]);
   });
 
@@ -521,10 +595,9 @@ function buildSummaryAoA(parsed, selectedMonth) {
 
   aoa.push([
     "전체", "총 매출",
-    totalGoal, totalActual, rate(totalActual, totalGoal),
-    ceGoal, ceActual, rate(ceActual, ceGoal),
-    mxGoal, mxActual, rate(mxActual, mxGoal),
-    "", "", "", "", "", "",
+    totalGoal, totalActual, "", rate(totalActual, totalGoal), "",
+    ceGoal, ceActual, "", rate(ceActual, ceGoal), "",
+    mxGoal, mxActual, "", rate(mxActual, mxGoal), "",
   ]);
 
   return { aoa, storeRows };
@@ -570,6 +643,22 @@ function buildModelTopAoa(parsed) {
       getTopModels(parsed.mxModelByStore, store, null, 10).forEach(item => {
         rows.push(["MX", group.manager, store, item.category, item.model, wonToMillion(item.amount)]);
       });
+    });
+  });
+  return rows;
+}
+
+
+function buildAirconSetAoa(parsed) {
+  const rows = [["담당", "점포", "에어컨 세트명", "판매수량", "매출"]];
+  STORE_GROUPS.forEach(group => {
+    group.stores.forEach(store => {
+      Object.values(parsed.airconSetByStore?.[store] || {})
+        .filter(item => item.amount !== 0 || item.qty !== 0)
+        .sort((a, b) => toNumber(b.amount) - toNumber(a.amount))
+        .forEach(item => {
+          rows.push([group.manager, store, item.setModel, item.qty, wonToMillion(item.amount)]);
+        });
     });
   });
   return rows;
@@ -654,6 +743,7 @@ function buildCheckSheet(parsed, selectedMonth) {
     ["제니엘", "코스트코 행 수", zenielStats.costcoRows],
     ["제니엘", "금액 행 수", zenielStats.amountRows],
     ["제니엘", "최종 반영 금액 행 수", zenielStats.includedAmountRows],
+    ["제니엘", "에어컨 세트 집계 행 수", zenielStats.airconSetRows],
     ["제니엘", "헤더 행", zenielStats.headerRowExcel],
     ["제니엘", "경로/점포/품목/모델/금액 컬럼", `${zenielStats.routeCol}/${zenielStats.storeCol}/${zenielStats.categoryCol}/${zenielStats.modelCol}/${zenielStats.measureCol}`],
     ["제니엘", "합산 일자 수", zenielStats.dateCols],
@@ -734,21 +824,55 @@ function styleSummarySheet(ws) {
   ws.getCell("A2").fill = fill(COLORS.navy);
   ws.getCell("A2").alignment = { horizontal: "left", vertical: "middle" };
 
-  const headerRow = ws.getRow(4);
-  headerRow.height = 26;
-  headerRow.eachCell((cell, colNo) => {
-    let color = COLORS.navy2;
-    if (colNo >= 3 && colNo <= 5) color = COLORS.green;
-    if (colNo >= 6 && colNo <= 8) color = COLORS.blue;
-    if (colNo >= 9 && colNo <= 11) color = "5B7F95";
-    if (colNo >= 12) color = "506070";
+  // 4행: 총 매출 / CE 매출 / MX 매출 대분류, 5행: 목표·매출·순위·달성률·순위 세부항목
+  ws.mergeCells(4, 1, 5, 1);
+  ws.mergeCells(4, 2, 5, 2);
+  ws.mergeCells(4, 3, 4, 7);
+  ws.mergeCells(4, 8, 4, 12);
+  ws.mergeCells(4, 13, 4, 17);
+
+  const groupColors = {
+    total: COLORS.green,
+    ce: COLORS.blue,
+    mx: "5B7F95",
+    base: COLORS.navy2,
+  };
+
+  [1, 2].forEach(colNo => {
+    const cell = ws.getRow(4).getCell(colNo);
+    cell.fill = fill(groupColors.base);
+    cell.font = { bold: true, color: { argb: COLORS.white }, size: 10 };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = borderStyle("FFFFFF");
+  });
+  [
+    { start: 3, end: 7, color: groupColors.total },
+    { start: 8, end: 12, color: groupColors.ce },
+    { start: 13, end: 17, color: groupColors.mx },
+  ].forEach(group => {
+    for (let c = group.start; c <= group.end; c += 1) {
+      const cell = ws.getRow(4).getCell(c);
+      cell.fill = fill(group.color);
+      cell.font = { bold: true, color: { argb: COLORS.white }, size: 11 };
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      cell.border = borderStyle("FFFFFF");
+    }
+  });
+
+  const subHeader = ws.getRow(5);
+  subHeader.height = 25;
+  subHeader.eachCell((cell, colNo) => {
+    let color = groupColors.base;
+    if (colNo >= 3 && colNo <= 7) color = groupColors.total;
+    if (colNo >= 8 && colNo <= 12) color = groupColors.ce;
+    if (colNo >= 13) color = groupColors.mx;
     cell.fill = fill(color);
     cell.font = { bold: true, color: { argb: COLORS.white }, size: 10 };
     cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
     cell.border = borderStyle("FFFFFF");
   });
 
-  for (let r = 5; r <= ws.rowCount; r += 1) {
+  for (let r = 6; r <= ws.rowCount; r += 1) {
     const row = ws.getRow(r);
     const isTotal = safeText(row.getCell(2).value) === "총 매출";
     row.height = isTotal ? 24 : 21;
@@ -764,13 +888,13 @@ function styleSummarySheet(ws) {
     });
   }
 
-  [3, 4, 6, 7, 9, 10].forEach(colNo => { ws.getColumn(colNo).numFmt = '#,##0.0'; });
-  [5, 8, 11].forEach(colNo => { ws.getColumn(colNo).numFmt = '0.0%'; });
-  [12, 13, 14, 15, 16, 17].forEach(colNo => { ws.getColumn(colNo).numFmt = '0'; });
+  [3, 4, 8, 9, 13, 14].forEach(colNo => { ws.getColumn(colNo).numFmt = '#,##0.0'; });
+  [6, 11, 16].forEach(colNo => { ws.getColumn(colNo).numFmt = '0.0%'; });
+  [5, 7, 10, 12, 15, 17].forEach(colNo => { ws.getColumn(colNo).numFmt = '0'; });
 
-  ws.views = [{ state: "frozen", ySplit: 4 }];
-  ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: ws.rowCount, column: 17 } };
-  setWidths(ws, [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 14, 18, 12, 14]);
+  ws.views = [{ state: "frozen", ySplit: 5 }];
+  ws.autoFilter = { from: { row: 5, column: 1 }, to: { row: ws.rowCount, column: 17 } };
+  setWidths(ws, [12, 12, 12, 12, 9, 12, 9, 12, 12, 9, 12, 9, 12, 12, 9, 12, 9]);
 }
 
 function styleReportCommentSheet(ws) {
@@ -815,6 +939,7 @@ async function makeWorkbook(parsed, selectedMonth) {
   const reportCommentAoa = buildReportCommentAoa(parsed, summary.storeRows);
   const detail = buildDetailSheets(parsed);
   const modelTopAoa = buildModelTopAoa(parsed);
+  const airconSetAoa = buildAirconSetAoa(parsed);
   const checkAoa = buildCheckSheet(parsed, selectedMonth);
 
   const wsSummary = addWorksheetFromAoA(workbook, "보고용_요약", summary.aoa);
@@ -832,6 +957,11 @@ async function makeWorkbook(parsed, selectedMonth) {
   const wsModel = addWorksheetFromAoA(workbook, "모델_TOP", modelTopAoa);
   styleNumericSheet(wsModel, "44546A");
   wsModel.getColumn(6).numFmt = '#,##0.0';
+
+  const wsAircon = addWorksheetFromAoA(workbook, "에어컨_세트별", airconSetAoa);
+  styleNumericSheet(wsAircon, "0F766E");
+  wsAircon.getColumn(4).numFmt = '#,##0';
+  wsAircon.getColumn(5).numFmt = '#,##0.0';
 
   const wsGoal = addWorksheetFromAoA(workbook, "목표_확인", detail.goalAoa);
   styleNumericSheet(wsGoal, "70AD47");
@@ -873,6 +1003,52 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+
+function previewNumber(value) {
+  return toNumber(value).toLocaleString("ko-KR", { maximumFractionDigits: 1 });
+}
+
+function renderSummaryPreview(storeRows) {
+  const panel = $("#summaryPreviewPanel");
+  const target = $("#summaryPreview");
+  if (!panel || !target) return;
+
+  const headers = ["담당", "점포", "총 목표", "총 매출", "총 달성률", "CE 목표", "CE 매출", "CE 달성률", "MX 목표", "MX 매출", "MX 달성률"];
+  const body = storeRows
+    .filter(row => row.type === "store")
+    .map(row => `
+      <tr>
+        <td>${row.manager}</td>
+        <td>${row.store}</td>
+        <td>${previewNumber(row.totalGoal)}</td>
+        <td>${previewNumber(row.totalActual)}</td>
+        <td>${ratePctText(row.totalRate)}</td>
+        <td>${previewNumber(row.ceGoal)}</td>
+        <td>${previewNumber(row.ceActual)}</td>
+        <td>${ratePctText(row.ceRate)}</td>
+        <td>${previewNumber(row.mxGoal)}</td>
+        <td>${previewNumber(row.mxActual)}</td>
+        <td>${ratePctText(row.mxRate)}</td>
+      </tr>
+    `).join("");
+
+  target.innerHTML = `
+    <table class="summary-table">
+      <thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+  panel.hidden = false;
+}
+
+function copySummaryPreview() {
+  const table = $("#summaryPreview table");
+  if (!table) return;
+  const rows = [...table.querySelectorAll("tr")].map(tr => [...tr.children].map(td => td.innerText).join("\t")).join("\n");
+  navigator.clipboard?.writeText(rows);
+  setStatus("매출 요약본 표를 클립보드에 복사했습니다.", "ok");
+}
+
 async function run() {
   try {
     setStatus("파일을 읽고 보고용 엑셀을 생성하고 있습니다...", "");
@@ -895,6 +1071,7 @@ async function run() {
       ceByStore: zenielParsed.ceByStore,
       ceByStoreCat: zenielParsed.ceByStoreCat,
       ceModelByStore: zenielParsed.ceModelByStore,
+      airconSetByStore: zenielParsed.airconSetByStore,
       mxByStore: mxParsed.mxByStore,
       mxByStoreCat: mxParsed.mxByStoreCat,
       mxModelByStore: mxParsed.mxModelByStore,
@@ -903,6 +1080,9 @@ async function run() {
       mxStats: mxParsed.stats,
       goalStats: goalParsed.stats,
     };
+
+    const previewRows = makeStoreRows(parsed);
+    renderSummaryPreview(previewRows);
 
     const outWb = await makeWorkbook(parsed, selectedMonth);
     const outputNameRaw = safeText($("#outputName").value) || "코스트코_CE_MX_실적_자동취합.xlsx";
@@ -929,7 +1109,12 @@ function clearAll() {
   $("#monthPicker").value = "2026-05";
   $("#outputName").value = "코스트코_CE_MX_실적_자동취합.xlsx";
   setStatus("파일을 업로드한 뒤 생성 버튼을 누르세요.");
+  const panel = $("#summaryPreviewPanel");
+  const target = $("#summaryPreview");
+  if (panel) panel.hidden = true;
+  if (target) target.innerHTML = "";
 }
 
 $("#runBtn").addEventListener("click", run);
 $("#clearBtn").addEventListener("click", clearAll);
+$("#copySummaryBtn")?.addEventListener("click", copySummaryPreview);
