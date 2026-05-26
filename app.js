@@ -12,6 +12,18 @@ const MX_OUTPUT_CATS = ["휴대폰", "태블릿", "PC", "웨어러블"];
 const CE_BUSINESS_ORDER = ["TV", "에어컨", "냉장고", "김치냉장고", "세탁기", "건조기", "의류청정기", "청소기", "공기청정기", "조리기기", "SAC", "AV", "디스플레이", "프린터", "가전MD", "정수기", "제습기", "신발관리기"];
 const MAIN_CE_CATS = ["TV", "에어컨", "냉장고", "김치냉장고", "세탁기", "건조기"];
 
+const AIRCON_GROUP_ORDER = [
+  "17평 Q9000",
+  "19평 Q9000 멀티",
+  "17평 클래식",
+  "17평 갤러리 단품",
+  "19평 갤러리 멀티",
+  "7평 벽걸이 에어컨",
+  "창문형 에어컨",
+];
+const AIRCON_AMBIGUOUS_GROUPS = new Set(["17평 Q9000", "17평 클래식"]);
+const AIRCON_FIXED_GROUPS = new Set(AIRCON_GROUP_ORDER.filter(group => !AIRCON_AMBIGUOUS_GROUPS.has(group)));
+
 const COLORS = {
   navy: "182642",
   navy2: "203764",
@@ -175,7 +187,36 @@ function extractAirconGroupName(desc) {
     .replace(/스탠드|벽걸이|본품|집기|자재|리모컨|설치/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return t;
+  return canonicalAirconGroup(t, desc);
+}
+
+function canonicalAirconGroup(group, desc = "") {
+  const g = safeText(group).replace(/\s+/g, " ").trim();
+  const d = safeText(desc).replace(/\s+/g, " ").trim();
+  const text = `${g} ${d}`;
+
+  if (/창문형/.test(text)) return "창문형 에어컨";
+  if (/벽걸이/.test(text) && !/Q9000|클래식|갤러리/.test(text)) return "7평 벽걸이 에어컨";
+  if (/Q9000/.test(text) && /17평/.test(text)) return "17평 Q9000";
+  if (/Q9000/.test(text) && /19평/.test(text)) return "19평 Q9000 멀티";
+  if (/클래식/.test(text) && /17평/.test(text)) return "17평 클래식";
+  if (/갤러리/.test(text) && /17평/.test(text)) return "17평 갤러리 단품";
+  if (/갤러리/.test(text) && /19평/.test(text)) return "19평 갤러리 멀티";
+  if (AIRCON_GROUP_ORDER.includes(g)) return g;
+  return g;
+}
+
+function airconGroupSortIndex(group) {
+  const idx = AIRCON_GROUP_ORDER.indexOf(safeText(group));
+  return idx >= 0 ? idx : 999;
+}
+
+function isAmbiguousAirconGroup(group) {
+  return AIRCON_AMBIGUOUS_GROUPS.has(safeText(group));
+}
+
+function isFixedAirconGroup(group) {
+  return AIRCON_FIXED_GROUPS.has(safeText(group));
 }
 
 function extractAirconRole(desc) {
@@ -311,7 +352,7 @@ function getAirconGroupsForModel(model, airconLookupData = null) {
   if (fallback && data.modelToGroups?.[fallback]) return objectKeys(data.modelToGroups[fallback]);
   if (fallback) {
     if (/^AW/.test(fallback)) return ["창문형 에어컨"];
-    if (/^AR/.test(fallback)) return ["벽걸이 6평"];
+    if (/^AR/.test(fallback)) return ["7평 벽걸이 에어컨"];
   }
 
   return [];
@@ -367,10 +408,10 @@ function buildAirconModelGroupMonthly(rawByStore, airconLookupData = null) {
     const groupBasisModels = {};
 
     Object.entries(raw.qtyByModel || {}).forEach(([model, qty]) => {
-      const groups = getAirconGroupsForModel(model, airconLookupData);
+      const groups = getAirconGroupsForModel(model, airconLookupData).map(group => canonicalAirconGroup(group));
       groups.forEach(group => {
         const basisModels = airconLookupData?.groupInfo?.[group]?.basisModels || {};
-        const isBasis = !!basisModels[model] || groups.length === 1 && objectKeys(basisModels).length === 0;
+        const isBasis = !!basisModels[model] || (groups.length === 1 && objectKeys(basisModels).length === 0);
         if (!isBasis) return;
         groupQty[group] = (groupQty[group] || 0) + toNumber(qty);
         groupBasisModels[group] = groupBasisModels[group] || {};
@@ -379,14 +420,17 @@ function buildAirconModelGroupMonthly(rawByStore, airconLookupData = null) {
     });
 
     Object.entries(groupQty).forEach(([group, qty]) => {
-      addToAirconModelGroupMap(result, store, group, 0, qty, 0, 0, "", "스탠드/본품 수량 기준");
+      addToAirconModelGroupMap(result, store, group, 0, qty, 0, 0, "", "기준 모델 수량 반영");
       Object.keys(groupBasisModels[group] || {}).forEach(model => {
         result[store][group].basisModels[model] = true;
       });
     });
 
     Object.entries(raw.amountByModel || {}).forEach(([model, amount]) => {
-      const groups = getAirconGroupsForModel(model, airconLookupData);
+      const rawGroups = getAirconGroupsForModel(model, airconLookupData).map(group => canonicalAirconGroup(group));
+      const groups = [...new Set(rawGroups)];
+      const modelQty = toNumber(raw.qtyByModel?.[model]);
+
       if (!groups.length) {
         addToAirconModelGroupMap(result, store, `${model} (모델군 미확인)`, amount, 0, 0, amount, model, "모델군 미확인 직접 반영");
         return;
@@ -398,21 +442,57 @@ function buildAirconModelGroupMonthly(rawByStore, airconLookupData = null) {
         return;
       }
 
-      const weights = groups.map(group => ({ group, weight: toNumber(groupQty[group]) }));
-      const totalWeight = weights.reduce((sum, item) => sum + item.weight, 0);
-      if (totalWeight > 0) {
-        weights.forEach(({ group, weight }) => {
-          if (!weight) return;
-          const shareAmount = amount * weight / totalWeight;
-          addToAirconModelGroupMap(result, store, group, shareAmount, 0, shareAmount, 0, model, "공용 구성품 스탠드 판매수량 기준 배분");
-          allocationLogs.push({ store, model, group, amount: shareAmount, basisQty: weight, totalBasisQty: totalWeight });
+      // 19평 Q9000 멀티, 17/19평 갤러리, 벽걸이, 창문형은 별도 헷갈림이 없는 모델군입니다.
+      // 공용 구성품 금액은 먼저 해당 모델군의 기준 모델 수량만큼 확정 배분하고,
+      // 남은 금액만 17평 Q9000/17평 클래식 안에서 스탠드 판매수량 비율로 배분합니다.
+      const fixedGroups = groups.filter(group => isFixedAirconGroup(group) && toNumber(groupQty[group]) > 0);
+      const ambiguousGroups = groups.filter(group => isAmbiguousAirconGroup(group) && toNumber(groupQty[group]) > 0);
+      let remainingAmount = toNumber(amount);
+      let remainingQty = modelQty;
+
+      if (modelQty > 0 && fixedGroups.length) {
+        fixedGroups.forEach(group => {
+          if (remainingQty <= 0 || remainingAmount <= 0) return;
+          const useQty = Math.min(toNumber(groupQty[group]), remainingQty);
+          if (useQty <= 0) return;
+          const shareAmount = toNumber(amount) * useQty / modelQty;
+          addToAirconModelGroupMap(result, store, group, shareAmount, 0, shareAmount, 0, model, "확정 모델군 수량 기준 배분");
+          allocationLogs.push({ store, model, group, amount: shareAmount, basisQty: useQty, totalBasisQty: modelQty, method: "확정 모델군 수량 우선" });
+          remainingAmount -= shareAmount;
+          remainingQty -= useQty;
         });
-      } else {
-        const each = amount / groups.length;
-        groups.forEach(group => {
-          addToAirconModelGroupMap(result, store, group, each, 0, each, 0, model, "공용 구성품 균등 배분: 수량 기준 없음");
-          allocationLogs.push({ store, model, group, amount: each, basisQty: 0, totalBasisQty: 0 });
-        });
+      }
+
+      if (remainingAmount > 0 && ambiguousGroups.length) {
+        const totalAmbiguousWeight = ambiguousGroups.reduce((sum, group) => sum + toNumber(groupQty[group]), 0);
+        if (totalAmbiguousWeight > 0) {
+          ambiguousGroups.forEach(group => {
+            const weight = toNumber(groupQty[group]);
+            const shareAmount = remainingAmount * weight / totalAmbiguousWeight;
+            addToAirconModelGroupMap(result, store, group, shareAmount, 0, shareAmount, 0, model, "17평 Q9000/클래식 스탠드 수량 기준 배분");
+            allocationLogs.push({ store, model, group, amount: shareAmount, basisQty: weight, totalBasisQty: totalAmbiguousWeight, method: "17평 잔여 배분" });
+          });
+          return;
+        }
+      }
+
+      if (remainingAmount > 0) {
+        const weightedGroups = groups.filter(group => toNumber(groupQty[group]) > 0);
+        const totalWeight = weightedGroups.reduce((sum, group) => sum + toNumber(groupQty[group]), 0);
+        if (totalWeight > 0) {
+          weightedGroups.forEach(group => {
+            const weight = toNumber(groupQty[group]);
+            const shareAmount = remainingAmount * weight / totalWeight;
+            addToAirconModelGroupMap(result, store, group, shareAmount, 0, shareAmount, 0, model, "스탠드/본품 수량 기준 배분");
+            allocationLogs.push({ store, model, group, amount: shareAmount, basisQty: weight, totalBasisQty: totalWeight, method: "수량 기준 배분" });
+          });
+        } else {
+          const each = remainingAmount / groups.length;
+          groups.forEach(group => {
+            addToAirconModelGroupMap(result, store, group, each, 0, each, 0, model, "공용 구성품 균등 배분: 수량 기준 없음");
+            allocationLogs.push({ store, model, group, amount: each, basisQty: 0, totalBasisQty: 0, method: "균등 배분" });
+          });
+        }
       }
     });
   });
@@ -784,6 +864,42 @@ function addRanks(rows) {
   });
 }
 
+
+function buildStoreRankReportAoa(parsed) {
+  const storeRows = makeStoreRows(parsed);
+  const aoa = [
+    ["점포", "총 매출", "", "", "", "", "CE 매출", "", "", "", "", "MX 매출", "", "", "", ""],
+    ["점포", "목표", "매출", "순위", "달성률", "순위", "목표", "매출", "순위", "달성률", "순위", "목표", "매출", "순위", "달성률", "순위"],
+  ];
+
+  STORE_LIST.forEach(store => {
+    const row = storeRows.find(item => item.store === store);
+    if (!row) return;
+    aoa.push([
+      row.store,
+      row.totalGoal, row.totalActual, row.totalSalesRank, row.totalRate, row.totalRateRank,
+      row.ceGoal, row.ceActual, row.ceSalesRank, row.ceRate, row.ceRateRank,
+      row.mxGoal, row.mxActual, row.mxSalesRank, row.mxRate, row.mxRateRank,
+    ]);
+  });
+
+  const totalGoal = sumStores(STORE_LIST, store => parsed.goals[store]?.total || 0);
+  const ceGoal = sumStores(STORE_LIST, store => parsed.goals[store]?.ce || 0);
+  const mxGoal = sumStores(STORE_LIST, store => parsed.goals[store]?.mx || 0);
+  const ceActual = sumStores(STORE_LIST, store => wonToMillion(parsed.ceByStore[store]));
+  const mxActual = sumStores(STORE_LIST, store => wonToMillion(parsed.mxByStore[store]));
+  const totalActual = ceActual + mxActual;
+
+  aoa.push([
+    "총 매출",
+    totalGoal, totalActual, "", rate(totalActual, totalGoal), "",
+    ceGoal, ceActual, "", rate(ceActual, ceGoal), "",
+    mxGoal, mxActual, "", rate(mxActual, mxGoal), "",
+  ]);
+
+  return aoa;
+}
+
 function buildSummaryAoA(parsed, selectedMonth) {
   const storeRows = makeStoreRows(parsed);
   const groupHeader = [
@@ -897,12 +1013,12 @@ function buildModelTopAoa(parsed) {
 
 
 function buildAirconModelGroupAoa(parsed) {
-  const rows = [["담당", "점포", "에어컨 구분", "기준 모델", "판매수량", "직접 매출", "배분 매출", "총 매출", "집계 기준", "비고"]];
+  const rows = [["담당", "점포", "에어컨 구분", "기준 모델", "판매수량", "직접 매출", "공용 구성품 매출", "총 매출", "집계 기준", "비고"]];
   STORE_GROUPS.forEach(group => {
     group.stores.forEach(store => {
       Object.values(parsed.airconModelGroupByStore?.[store] || {})
         .filter(item => item.amount !== 0 || item.qty !== 0)
-        .sort((a, b) => toNumber(b.amount) - toNumber(a.amount))
+        .sort((a, b) => airconGroupSortIndex(a.group) - airconGroupSortIndex(b.group) || toNumber(b.amount) - toNumber(a.amount))
         .forEach(item => {
           const basisModels = objectKeys(item.basisModels).join(", ") || "-";
           const notes = objectKeys(item.notes).join(" / ") || "직접 매핑";
@@ -915,7 +1031,7 @@ function buildAirconModelGroupAoa(parsed) {
             wonToMillion(item.directAmount),
             wonToMillion(item.allocatedAmount),
             wonToMillion(item.amount),
-            "월 단위 스탠드/본품 판매수량 기준",
+            "월 단위 기준모델 수량 기준",
             notes,
           ]);
         });
@@ -925,9 +1041,9 @@ function buildAirconModelGroupAoa(parsed) {
 }
 
 function buildAirconAllocationAoa(parsed) {
-  const rows = [["점포", "공용 모델", "배분 모델군", "배분금액", "기준수량", "전체기준수량"]];
+  const rows = [["점포", "공용 모델", "배분 모델군", "배분금액", "기준수량", "전체기준수량", "배분방식"]];
   (parsed.airconAllocationLogs || []).forEach(item => {
-    rows.push([item.store, item.model, item.group, wonToMillion(item.amount), item.basisQty, item.totalBasisQty]);
+    rows.push([item.store, item.model, item.group, wonToMillion(item.amount), item.basisQty, item.totalBasisQty, item.method || ""]);
   });
   return rows;
 }
@@ -1088,6 +1204,81 @@ function setWidths(ws, widths) {
   widths.forEach((w, idx) => { ws.getColumn(idx + 1).width = w; });
 }
 
+
+function styleStoreRankReportSheet(ws) {
+  // 1행 대분류, 2행 세부항목 기준의 보고용 점포 순위표
+  ws.mergeCells(1, 1, 2, 1);
+  ws.mergeCells(1, 2, 1, 6);
+  ws.mergeCells(1, 7, 1, 11);
+  ws.mergeCells(1, 12, 1, 16);
+
+  const groupStyles = [
+    { start: 1, end: 1, color: COLORS.navy2 },
+    { start: 2, end: 6, color: COLORS.green },
+    { start: 7, end: 11, color: COLORS.blue },
+    { start: 12, end: 16, color: "5B7F95" },
+  ];
+
+  [1, 2].forEach(rowNo => {
+    const row = ws.getRow(rowNo);
+    row.height = rowNo === 1 ? 26 : 25;
+    for (let c = 1; c <= 16; c += 1) {
+      const cell = row.getCell(c);
+      const group = groupStyles.find(g => c >= g.start && c <= g.end);
+      cell.fill = fill(group?.color || COLORS.navy2);
+      cell.font = { bold: true, color: { argb: COLORS.white }, size: 10 };
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      cell.border = borderStyle("FFFFFF");
+    }
+  });
+
+  const rankCols = new Set([4, 6, 9, 11, 14, 16]);
+  const topFill = "C6EFCE";
+  const topFont = "006100";
+  const bottomFill = "FFC7CE";
+  const bottomFont = "9C0006";
+  const lastRow = ws.rowCount;
+
+  for (let r = 3; r <= lastRow; r += 1) {
+    const row = ws.getRow(r);
+    const isTotal = safeText(row.getCell(1).value) === "총 매출";
+    row.height = isTotal ? 25 : 22;
+
+    for (let c = 1; c <= 16; c += 1) {
+      const cell = row.getCell(c);
+      cell.border = isTotal ? borderStyle("366092") : borderStyle("D9E2F3");
+      cell.alignment = { horizontal: c === 1 ? "center" : "right", vertical: "middle", wrapText: false };
+
+      if (isTotal) {
+        cell.fill = fill(COLORS.paleGreen);
+        cell.font = { bold: true, color: { argb: COLORS.black } };
+        continue;
+      }
+
+      if (r % 2 === 0) cell.fill = fill("F8FAFD");
+
+      if (rankCols.has(c)) {
+        const rank = toNumber(cell.value);
+        if (rank >= 1 && rank <= 6) {
+          cell.fill = fill(topFill);
+          cell.font = { color: { argb: topFont } };
+        } else if (rank >= 15) {
+          cell.fill = fill(bottomFill);
+          cell.font = { color: { argb: bottomFont } };
+        }
+      }
+    }
+  }
+
+  [2, 3, 7, 8, 12, 13].forEach(colNo => { ws.getColumn(colNo).numFmt = '#,##0.0'; });
+  [5, 10, 15].forEach(colNo => { ws.getColumn(colNo).numFmt = '0.0%'; });
+  [4, 6, 9, 11, 14, 16].forEach(colNo => { ws.getColumn(colNo).numFmt = '0'; });
+
+  ws.views = [{ state: "frozen", ySplit: 2, xSplit: 1 }];
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: ws.rowCount, column: 16 } };
+  setWidths(ws, [12, 10, 10, 10, 12, 10, 10, 10, 10, 12, 10, 10, 10, 10, 12, 10]);
+}
+
 function styleSummarySheet(ws) {
   ws.mergeCells(1, 1, 1, 17);
   ws.getCell("A1").font = { bold: true, size: 18, color: { argb: COLORS.white } };
@@ -1212,12 +1403,16 @@ async function makeWorkbook(parsed, selectedMonth) {
   workbook.calcProperties.fullCalcOnLoad = true;
 
   const summary = buildSummaryAoA(parsed, selectedMonth);
+  const storeRankReportAoa = buildStoreRankReportAoa(parsed);
   const reportCommentAoa = buildReportCommentAoa(parsed, summary.storeRows);
   const detail = buildDetailSheets(parsed);
   const modelTopAoa = buildModelTopAoa(parsed);
   const airconModelGroupAoa = buildAirconModelGroupAoa(parsed);
   const airconAllocationAoa = buildAirconAllocationAoa(parsed);
   const checkAoa = buildCheckSheet(parsed, selectedMonth);
+
+  const wsRankReport = addWorksheetFromAoA(workbook, "보고용_점포순위", storeRankReportAoa);
+  styleStoreRankReportSheet(wsRankReport);
 
   const wsSummary = addWorksheetFromAoA(workbook, "보고용_요약", summary.aoa);
   styleSummarySheet(wsSummary);

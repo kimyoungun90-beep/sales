@@ -40,7 +40,7 @@
 
         <label class="upload-card optional-card">
           <span class="label-title">④ 에어컨 상품DB/모델군 기준표 <em>선택</em></span>
-          <span class="label-desc">Q9000/클래식/갤러리/벽걸이/창문형 모델군과 구성품을 매핑하는 상품DB</span>
+          <span class="label-desc">17평 Q9000/19평 Q9000 멀티/17평 클래식/갤러리/벽걸이/창문형 기준 상품DB</span>
           <input id="airconMapFile" type="file" accept=".xlsx,.xls" />
         </label>
       </div>
@@ -96,8 +96,9 @@
           <ul>
             <li>점포별 전체/CE/MX 현황 자동 문장 생성</li>
             <li>CE 주요 품목과 대표 모델 자동 추출</li>
-            <li>에어컨 상품DB 업로드 시 Q9000/클래식/갤러리/벽걸이/창문형 모델군 기준으로 월 단위 반영</li>
-            <li>공용 자재·설치비·리모컨·벽걸이 금액은 스탠드/본품 판매수량 비율로 배분</li>
+            <li>에어컨 상품DB 업로드 시 17평 Q9000 → 19평 Q9000 멀티 → 17평 클래식 → 17평 갤러리 단품 → 19평 갤러리 멀티 → 7평 벽걸이 → 창문형 순서로 정리</li>
+            <li>19평 Q9000/갤러리/벽걸이/창문형은 확정 모델군 수량 기준으로 우선 반영</li>
+            <li>남는 공용 자재·설치비·리모컨·벽걸이 금액만 17평 Q9000/17평 클래식 스탠드 수량 비율로 배분</li>
             <li>부진 품목은 데이터 기준으로 점검 포인트 표시</li>
           </ul>
         </div>
