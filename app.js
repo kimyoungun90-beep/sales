@@ -763,6 +763,62 @@ function parseGoal(wb) {
   return { goals, stats: { includedRows, unknownStores } };
 }
 
+
+function makeEmptyZenielParsed() {
+  return {
+    ceByStore: makeEmptyStoreMap(),
+    ceByStoreCat: makeEmptyStoreCategoryMap(),
+    ceModelByStore: makeEmptyStoreModelMap(),
+    airconModelGroupByStore: makeEmptyStoreAirconModelGroupMap(),
+    airconAllocationLogs: [],
+    stats: {
+      costcoRows: 0,
+      amountRows: 0,
+      includedAmountRows: 0,
+      airconRows: 0,
+      airconAllocationRows: 0,
+      headerRowExcel: "미업로드",
+      routeCol: "-",
+      storeCol: "-",
+      categoryCol: "-",
+      modelCol: "-",
+      measureCol: "-",
+      dateCols: 0,
+      firstDate: "-",
+      lastDate: "-",
+      excludedStores: {},
+      excludedCategories: {},
+      unknownStores: {},
+    },
+  };
+}
+
+function makeEmptyMxParsed(selectedMonth) {
+  return {
+    mxByStore: makeEmptyStoreMap(),
+    mxByStoreCat: makeEmptyStoreCategoryMap(),
+    mxModelByStore: makeEmptyStoreModelMap(),
+    stats: {
+      targetLabel: monthLabelFromInput(selectedMonth),
+      monthRowExcel: "미업로드",
+      monthColExcel: "-",
+      includedRows: 0,
+      includedModelRows: 0,
+      unknownStores: {},
+    },
+  };
+}
+
+function makeEmptyGoalParsed() {
+  return {
+    goals: Object.fromEntries(STORE_LIST.map(store => [store, { total: 0, ce: 0, mx: 0 }])),
+    stats: {
+      includedRows: 0,
+      unknownStores: {},
+    },
+  };
+}
+
 function uniqueCeCategories(ceByStoreCat) {
   const totals = {};
   STORE_LIST.forEach(store => {
@@ -848,9 +904,16 @@ function addRanks(rows) {
   ];
 
   rankSpecs.forEach(([valueKey, rankKey]) => {
-    const sorted = [...rows]
-      .filter(row => row.type === "store" && row[valueKey] !== null && row[valueKey] !== undefined)
-      .sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]));
+    const candidates = [...rows]
+      .filter(row => row.type === "store" && row[valueKey] !== null && row[valueKey] !== undefined);
+
+    // 해당 실적 파일이 아직 안 들어온 경우에는 전체 값이 0이라 1위로 잘못 표시될 수 있어 순위를 비워둡니다.
+    if (!candidates.some(row => toNumber(row[valueKey]) > 0)) {
+      rows.forEach(row => { row[rankKey] = ""; });
+      return;
+    }
+
+    const sorted = candidates.sort((a, b) => toNumber(b[valueKey]) - toNumber(a[valueKey]));
 
     let lastValue = null;
     let lastRank = 0;
@@ -1554,16 +1617,20 @@ async function run() {
     if (!selectedMonth) throw new Error("MX 기준월을 선택하세요.");
 
     const [zeniel, mx, goal, airconMap] = await Promise.all([
-      readWorkbookFromInput("#zenielFile"),
-      readWorkbookFromInput("#mxFile"),
-      readWorkbookFromInput("#goalFile"),
+      readOptionalWorkbookFromInput("#zenielFile"),
+      readOptionalWorkbookFromInput("#mxFile"),
+      readOptionalWorkbookFromInput("#goalFile"),
       readOptionalWorkbookFromInput("#airconMapFile"),
     ]);
 
+    if (!zeniel.wb && !mx.wb && !goal.wb) {
+      throw new Error("제니엘 실적 데이터, MX SI 실적, 목표 파일 중 최소 1개는 업로드하세요.");
+    }
+
     const airconLookupData = parseAirconSetLookup(airconMap.wb);
-    const zenielParsed = parseZeniel(zeniel.wb, airconLookupData);
-    const mxParsed = parseMx(mx.wb, selectedMonth);
-    const goalParsed = parseGoal(goal.wb);
+    const zenielParsed = zeniel.wb ? parseZeniel(zeniel.wb, airconLookupData) : makeEmptyZenielParsed();
+    const mxParsed = mx.wb ? parseMx(mx.wb, selectedMonth) : makeEmptyMxParsed(selectedMonth);
+    const goalParsed = goal.wb ? parseGoal(goal.wb) : makeEmptyGoalParsed();
 
     const parsed = {
       ceByStore: zenielParsed.ceByStore,
@@ -1595,8 +1662,15 @@ async function run() {
     const ceTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.ceByStore[store]), 0);
     const mxTotal = STORE_LIST.reduce((sum, store) => sum + wonToMillion(parsed.mxByStore[store]), 0);
 
+    const uploadedStatus = [
+      `제니엘: ${zeniel.wb ? "반영" : "미업로드"}`,
+      `MX: ${mx.wb ? "반영" : "미업로드"}`,
+      `목표: ${goal.wb ? "반영" : "미업로드"}`,
+      `에어컨 기준표: ${airconLookupData.stats.used ? "반영" : "미사용"}`,
+    ].join(" / " );
+
     setStatus(
-      `완료되었습니다. CE ${ceTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원, MX ${mxTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원 기준으로 보고용 요약·보고멘트 시트를 생성했습니다. 에어컨 모델군 기준표: ${airconLookupData.stats.used ? "반영" : "미사용"}.`,
+      `완료되었습니다. CE ${ceTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원, MX ${mxTotal.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}백만원 기준으로 생성했습니다. ${uploadedStatus}.`,
       "ok"
     );
   } catch (error) {
