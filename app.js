@@ -744,25 +744,164 @@ function parseGoal(wb) {
   const unknownStores = {};
   let includedRows = 0;
 
+  const norm = value => safeText(value).replace(/\s+/g, "").toUpperCase();
+  const maxCol = rows.reduce((max, row) => Math.max(max, (row || []).length), 0);
+  const scanLimit = Math.min(rows.length, 15);
+
+  function rowHasCostcoChannel(row) {
+    return (row || []).some(value => {
+      const text = safeText(value);
+      return text === "CC" || text.includes("코스트코");
+    });
+  }
+
+  function findStoreInRow(row, preferredCol) {
+    const preferred = normalizeStore(row?.[preferredCol]);
+    if (STORE_LIST.includes(preferred)) return { store: preferred, raw: row?.[preferredCol] };
+
+    for (let c = 0; c < (row || []).length; c += 1) {
+      const store = normalizeStore(row[c]);
+      if (STORE_LIST.includes(store)) return { store, raw: row[c] };
+    }
+    return { store: "", raw: row?.[preferredCol] || "" };
+  }
+
+  function detectStoreCol() {
+    const counts = {};
+    rows.forEach(row => {
+      if (!rowHasCostcoChannel(row)) return;
+      (row || []).forEach((value, colIdx) => {
+        const store = normalizeStore(value);
+        if (STORE_LIST.includes(store)) counts[colIdx] = (counts[colIdx] || 0) + 1;
+      });
+    });
+
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return best ? Number(best[0]) : 12;
+  }
+
+  function headerTextAt(rowIdx, colIdx) {
+    return norm(rows[rowIdx]?.[colIdx]);
+  }
+
+  function findDirectOldGoalColumns() {
+    for (let r = 0; r < scanLimit; r += 1) {
+      for (let c = 0; c < maxCol; c += 1) {
+        const text = headerTextAt(r, c);
+        if (!text.includes("목표계") && !text.includes("목표합계") && text !== "TOTAL") continue;
+
+        let ceCol = -1;
+        let mxCol = -1;
+        for (let rr = r; rr < Math.min(rows.length, r + 4); rr += 1) {
+          for (let cc = c; cc <= Math.min(maxCol - 1, c + 5); cc += 1) {
+            const label = headerTextAt(rr, cc);
+            if (label === "CE") ceCol = cc;
+            if (label === "MX") mxCol = cc;
+          }
+        }
+
+        if (ceCol >= 0 && mxCol >= 0) {
+          return {
+            totalCol: c,
+            ceCol,
+            mxCol,
+            method: "구형 목표계/CE/MX 헤더 자동인식",
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  function nearestCeMxSection(colIdx) {
+    let best = null;
+    for (let r = 0; r < Math.min(rows.length, 8); r += 1) {
+      for (let c = 0; c <= colIdx; c += 1) {
+        const label = headerTextAt(r, c);
+        if (label !== "CE" && label !== "MX") continue;
+        const dist = colIdx - c;
+        if (!best || dist < best.dist || (dist === best.dist && r > best.row)) {
+          best = { label, dist, row: r, col: c };
+        }
+      }
+    }
+    return best?.label || "";
+  }
+
+  function findFlexibleGoalColumns() {
+    const old = findDirectOldGoalColumns();
+    if (old) return old;
+
+    const candidates = [];
+    for (let c = 0; c < maxCol; c += 1) {
+      const colHeader = rows.slice(0, scanLimit).map(row => norm(row?.[c])).filter(Boolean).join("|");
+      const isGoalCol = colHeader.includes("배분목표") || colHeader.includes("최종목표") || colHeader.includes("확정목표");
+      if (!isGoalCol) continue;
+      const section = nearestCeMxSection(c);
+      if (section === "CE" || section === "MX") candidates.push({ col: c, section, header: colHeader });
+    }
+
+    const ceCandidate = candidates.find(item => item.section === "CE");
+    const mxCandidate = candidates.find(item => item.section === "MX");
+    if (ceCandidate || mxCandidate) {
+      return {
+        totalCol: -1,
+        ceCol: ceCandidate ? ceCandidate.col : -1,
+        mxCol: mxCandidate ? mxCandidate.col : -1,
+        method: "CE/MX 배분목표 헤더 자동인식",
+      };
+    }
+
+    // 마지막 안전장치: 기존 26.5월 양식 기본 위치
+    return {
+      totalCol: 14,
+      ceCol: 15,
+      mxCol: 16,
+      method: "기본 위치 fallback(O/P/Q)",
+    };
+  }
+
+  const storeCol = detectStoreCol();
+  const columns = findFlexibleGoalColumns();
+
   rows.forEach(row => {
-    if (safeText(row[10]) !== "CC") return;
-    const store = normalizeStore(row[12]);
-    if (!STORE_LIST.includes(store)) {
-      unknownStores[safeText(row[12])] = (unknownStores[safeText(row[12])] || 0) + 1;
+    if (!rowHasCostcoChannel(row)) return;
+
+    const foundStore = findStoreInRow(row, storeCol);
+    const store = foundStore.store;
+    if (!store) {
+      const raw = safeText(foundStore.raw);
+      if (raw && !/코스트코|CC|합계|목표|지역|권역/.test(raw)) {
+        unknownStores[raw] = (unknownStores[raw] || 0) + 1;
+      }
       return;
     }
 
-    goals[store] = {
-      total: toNumber(row[14]),
-      ce: toNumber(row[15]),
-      mx: toNumber(row[16]),
-    };
+    const ce = columns.ceCol >= 0 ? toNumber(row[columns.ceCol]) : 0;
+    const mx = columns.mxCol >= 0 ? toNumber(row[columns.mxCol]) : 0;
+    let total = columns.totalCol >= 0 ? toNumber(row[columns.totalCol]) : 0;
+    if (!total && (ce || mx)) total = ce + mx;
+
+    // 코스트코 점포 행인데 목표값이 모두 비어 있으면 반영하지 않음
+    if (!total && !ce && !mx) return;
+
+    goals[store] = { total, ce, mx };
     includedRows += 1;
   });
 
-  return { goals, stats: { includedRows, unknownStores } };
+  return {
+    goals,
+    stats: {
+      includedRows,
+      unknownStores,
+      method: columns.method,
+      storeCol: XLSX.utils.encode_col(storeCol),
+      totalGoalCol: columns.totalCol >= 0 ? XLSX.utils.encode_col(columns.totalCol) : "CE+MX 자동합산",
+      ceGoalCol: columns.ceCol >= 0 ? XLSX.utils.encode_col(columns.ceCol) : "미인식",
+      mxGoalCol: columns.mxCol >= 0 ? XLSX.utils.encode_col(columns.mxCol) : "미인식",
+    },
+  };
 }
-
 
 function makeEmptyZenielParsed() {
   return {
