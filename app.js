@@ -306,7 +306,8 @@ function parseAirconSetLookup(wb) {
 
   wb.SheetNames.forEach(sheetName => {
     const rows = rowsFromSheet(wb.Sheets[sheetName]);
-    rows.forEach(row => {
+    rows.forEach(rawRow => {
+      const row = rawRow || [];
       const model = normalizeModelCode(row[0]);
       const desc = [row[1], row[2], row[3]].map(safeText).filter(Boolean).join(" ");
       if (!looksLikeModelCode(model) || !desc) return;
@@ -589,7 +590,8 @@ function parseZeniel(wb, airconLookupData = null) {
   let amountRows = 0;
   let airconRows = 0;
 
-  rows.slice(headerIndex + 1).forEach(row => {
+  rows.slice(headerIndex + 1).forEach(rawRow => {
+    const row = rawRow || [];
     if (safeText(row[idxRoute]) !== "코스트코") return;
     costcoRows += 1;
 
@@ -693,7 +695,8 @@ function parseMx(wb, selectedMonth) {
   let includedRows = 0;
   let includedModelRows = 0;
 
-  rows.slice(monthRowIndex + 2).forEach(row => {
+  rows.slice(monthRowIndex + 2).forEach(rawRow => {
+    const row = rawRow || [];
     if (row[6]) currentStore = normalizeStore(row[6]);
     if (!currentStore) return;
 
@@ -864,7 +867,8 @@ function parseGoal(wb) {
   const storeCol = detectStoreCol();
   const columns = findFlexibleGoalColumns();
 
-  rows.forEach(row => {
+  rows.forEach(rawRow => {
+    const row = rawRow || [];
     if (!rowHasCostcoChannel(row)) return;
 
     const foundStore = findStoreInRow(row, storeCol);
