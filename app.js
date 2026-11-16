@@ -109,7 +109,7 @@ function isExcludedZenielStore(raw) {
 function isZenielMxCategory(category) {
   const s = safeText(category).replace(/\s+/g, "").toUpperCase();
   if (!s) return false;
-  return ["웨어러블", "PC", "모바일", "태블릿", "휴대폰", "스마트폰", "자급제폰"].some(keyword => s.includes(keyword.toUpperCase()));
+  return ["웨어러블", "웨어러벌", "버즈", "노트북", "PC", "모바일", "태블릿", "휴대폰", "스마트폰", "자급제폰"].some(keyword => s.includes(keyword.toUpperCase()));
 }
 
 function mapMxProduct(product) {
@@ -555,7 +555,60 @@ function findHeaderIndexAndMap(rows, requiredLabels, maxScan = 80) {
   return { headerIndex: -1, columnMap: {}, header: [] };
 }
 
-function parseZeniel(wb, airconLookupData = null) {
+function parseZeniel(wb, airconLookupData = null, selectedMonth = currentMonth()) {
+  const dailySheets = wb.SheetNames.filter(name => /^\d{4}$/.test(name));
+  if (dailySheets.length) return parseZenielDaily(wb, dailySheets, airconLookupData, selectedMonth);
+  return parseZenielLegacy(wb, airconLookupData, selectedMonth);
+}
+
+function parseZenielDaily(wb, dailySheets, airconLookupData, selectedMonth) {
+  const [year, month] = selectedMonth.split("-").map(Number);
+  const names = dailySheets.filter(name => {
+    const m = Number(name.slice(0, 2));
+    const d = Number(name.slice(2));
+    return m === month && d >= 1 && d <= new Date(year, month, 0).getDate();
+  }).sort();
+  if (!names.length) throw new Error(`제니엘 일자별 파일에 ${selectedMonth}에 해당하는 날짜 시트(MMDD)가 없습니다.`);
+
+  // 기존 CE/에어컨 집계에 일별 지역 매출과 판매수량만 전달합니다.
+  // 배송 금액 및 전년동기는 별도 지표이므로 더하지 않습니다.
+  const dateLabel = `${String(year).slice(-2)}Y${String(month).padStart(2, "0")}M01D`;
+  const records = [["B2C경로그룹", "대표거래선", "품목", "모델", "메져_구분", dateLabel]];
+  let sourceColumns;
+  names.forEach(name => {
+    const rows = rowsFromSheet(wb.Sheets[name]);
+    const required = ["B2C경로그룹", "대표거래선", "품목", "모델", "실판매_지역_금액(원)", "실판매_수량(옵션포함)_(대)"];
+    const found = findHeaderIndexAndMap(rows, required);
+    if (found.headerIndex < 0) throw new Error(`제니엘 ${name} 시트에서 일자별 실적 헤더를 찾지 못했습니다.`);
+    const col = found.columnMap;
+    if (!sourceColumns) sourceColumns = {
+      headerRowExcel: found.headerIndex + 1,
+      routeCol: XLSX.utils.encode_col(col["B2C경로그룹"]),
+      storeCol: XLSX.utils.encode_col(col["대표거래선"]),
+      categoryCol: XLSX.utils.encode_col(col["품목"]),
+      modelCol: XLSX.utils.encode_col(col["모델"]),
+      measureCol: `${XLSX.utils.encode_col(col["실판매_지역_금액(원)"])} (수량 ${XLSX.utils.encode_col(col["실판매_수량(옵션포함)_(대)"])})`,
+    };
+    rows.slice(found.headerIndex + 1).forEach(row => {
+      if (safeText(row?.[col["B2C경로그룹"]]) !== "코스트코") return;
+      const key = [row[col["B2C경로그룹"]], row[col["대표거래선"]], row[col["품목"]], row[col["모델"]]];
+      records.push([...key, "금액", row[col["실판매_지역_금액(원)"]]]);
+      if (isAirconCategory(key[2])) records.push([...key, "수량", row[col["실판매_수량(옵션포함)_(대)"]]]);
+    });
+  });
+  const normalized = { SheetNames: ["일별"], Sheets: { "일별": XLSX.utils.aoa_to_sheet(records) } };
+  const result = parseZenielLegacy(normalized, airconLookupData, selectedMonth);
+  Object.assign(result.stats, {
+    sourceFormat: "일자별 시트 / 실판매_지역_금액(원)",
+    dateCols: names.length,
+    firstDate: `${year}-${names[0].slice(0, 2)}-${names[0].slice(2)}`,
+    lastDate: `${year}-${names.at(-1).slice(0, 2)}-${names.at(-1).slice(2)}`,
+    ...sourceColumns,
+  });
+  return result;
+}
+
+function parseZenielLegacy(wb, airconLookupData, selectedMonth) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = rowsFromSheet(ws);
   const found = findHeaderIndexAndMap(rows, ["B2C경로그룹", "대표거래선", "품목", "메져_구분"], 80);
@@ -573,10 +626,11 @@ function parseZeniel(wb, airconLookupData = null) {
   const dateCols = [];
 
   header.forEach((value, idx) => {
-    if (/^\d{2}Y\d{2}M\d{2}D$/.test(safeText(value))) dateCols.push(idx);
+    const match = safeText(value).match(/^(\d{2})Y(\d{2})M\d{2}D$/);
+    if (match && `20${match[1]}-${match[2]}` === selectedMonth) dateCols.push(idx);
   });
 
-  if (!dateCols.length) throw new Error("제니엘 파일에서 일자 컬럼(예: 26Y05M01D)을 찾지 못했습니다.");
+  if (!dateCols.length) throw new Error(`제니엘 파일에서 ${selectedMonth}의 일자 컬럼을 찾지 못했습니다.`);
 
   const ceByStore = makeEmptyStoreMap();
   const ceByStoreCat = makeEmptyStoreCategoryMap();
@@ -855,7 +909,7 @@ function parseGoal(wb) {
       };
     }
 
-    // 마지막 안전장치: 기존 26.5월 양식 기본 위치
+    // 기존 점별 목표 양식 기본 위치
     return {
       totalCol: 14,
       ceCol: 15,
@@ -1329,7 +1383,8 @@ function buildCheckSheet(parsed, selectedMonth) {
   const { zenielStats, mxStats, goalStats, airconLookupStats } = parsed;
   const aoa = [
     ["구분", "항목", "값"],
-    ["기준", "MX 기준월", selectedMonth],
+    ["기준", "실적/목표 기준월", selectedMonth],
+    ["제니엘", "금액 집계 기준", zenielStats.sourceFormat || "일자 컬럼 / 금액 행"],
     ["제니엘", "코스트코 행 수", zenielStats.costcoRows],
     ["제니엘", "금액 행 수", zenielStats.amountRows],
     ["제니엘", "최종 반영 금액 행 수", zenielStats.includedAmountRows],
@@ -1757,7 +1812,7 @@ async function run() {
     if (typeof ExcelJS === "undefined") throw new Error("ExcelJS 라이브러리를 불러오지 못했습니다. 인터넷 연결 또는 CDN 차단 여부를 확인하세요.");
 
     const selectedMonth = $("#monthPicker").value;
-    if (!selectedMonth) throw new Error("MX 기준월을 선택하세요.");
+    if (!selectedMonth) throw new Error("실적/목표 기준월을 선택하세요.");
 
     const [zeniel, mx, goal, airconMap] = await Promise.all([
       readOptionalWorkbookFromInput("#zenielFile"),
@@ -1767,11 +1822,11 @@ async function run() {
     ]);
 
     if (!zeniel.wb && !mx.wb && !goal.wb) {
-      throw new Error("제니엘 실적 데이터, MX SI 실적, 목표 파일 중 최소 1개는 업로드하세요.");
+      throw new Error("제니엘 일자별 실적, MX SI 실적, 목표 파일 중 최소 1개는 업로드하세요.");
     }
 
     const airconLookupData = parseAirconSetLookup(airconMap.wb);
-    const zenielParsed = zeniel.wb ? parseZeniel(zeniel.wb, airconLookupData) : makeEmptyZenielParsed();
+    const zenielParsed = zeniel.wb ? parseZeniel(zeniel.wb, airconLookupData, selectedMonth) : makeEmptyZenielParsed();
     const mxParsed = mx.wb ? parseMx(mx.wb, selectedMonth) : makeEmptyMxParsed(selectedMonth);
     const goalParsed = goal.wb ? parseGoal(goal.wb) : makeEmptyGoalParsed();
 
@@ -1824,7 +1879,7 @@ async function run() {
 
 function clearAll() {
   ["#zenielFile", "#mxFile", "#goalFile", "#airconMapFile"].forEach(id => { $(id).value = ""; });
-  $("#monthPicker").value = "2026-05";
+  $("#monthPicker").value = currentMonth();
   $("#outputName").value = "코스트코_CE_MX_실적_자동취합.xlsx";
   setStatus("파일을 업로드한 뒤 생성 버튼을 누르세요.");
   const panel = $("#summaryPreviewPanel");
@@ -1833,6 +1888,13 @@ function clearAll() {
   if (target) target.innerHTML = "";
 }
 
+function currentMonth() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+$("#monthPicker").value = currentMonth();
 $("#runBtn").addEventListener("click", run);
 $("#clearBtn").addEventListener("click", clearAll);
 $("#copySummaryBtn")?.addEventListener("click", copySummaryPreview);
+

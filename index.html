@@ -12,7 +12,7 @@
       <div>
         <p class="eyebrow">Zeniel Costco Sales Auto Report</p>
         <h1>코스트코 CE/MX 실적 자동 취합 웹앱</h1>
-        <p class="desc">제니엘 실적 데이터, MX SI 실적, 목표 파일, 상품DB를 업로드하면 보고용 요약·보고멘트·에어컨 월 모델군 시트를 자동 생성합니다.</p>
+        <p class="desc">제니엘 일자별 실적, MX SI 실적, 월별 점별 목표 파일, 상품DB를 업로드하면 보고용 요약·보고멘트·에어컨 월 모델군 시트를 자동 생성합니다.</p>
       </div>
       <div class="badge">단위: 백만원</div>
     </section>
@@ -21,8 +21,8 @@
       <h2>1. 파일 업로드</h2>
       <div class="grid">
         <label class="upload-card">
-          <span class="label-title">① 제니엘 실적 데이터</span>
-          <span class="label-desc">B2C경로그룹 / 대표거래선 / 품목 / 모델 / 메져_구분 / 일자별 금액 자동 인식</span>
+          <span class="label-title">① 제니엘 일자별 실적</span>
+          <span class="label-desc">날짜별 시트(MMDD)의 코스트코 지역 매출(J열) 합산 · 기존 실적 데이터 형식도 지원</span>
           <input id="zenielFile" type="file" accept=".xlsx,.xls" />
         </label>
 
@@ -33,8 +33,8 @@
         </label>
 
         <label class="upload-card">
-          <span class="label-title">③ 26.5월 제니엘 점별 목표</span>
-          <span class="label-desc">“매장별 목표” 시트의 CC 점포별 CE/MX 목표</span>
+          <span class="label-title">③ 월별 제니엘 점별 목표</span>
+          <span class="label-desc">선택한 기준월의 목표 파일 업로드 · “매장별 목표” 시트의 CC 점포별 CE/MX 목표</span>
           <input id="goalFile" type="file" accept=".xlsx,.xls" />
         </label>
 
@@ -50,15 +50,15 @@
       <h2>2. 기준 설정</h2>
       <div class="settings-row">
         <label>
-          <span>MX 기준월</span>
-          <input id="monthPicker" type="month" value="2026-05" />
+          <span>실적/목표 기준월</span>
+          <input id="monthPicker" type="month" />
         </label>
         <label>
           <span>파일명</span>
           <input id="outputName" type="text" value="코스트코_CE_MX_실적_자동취합.xlsx" />
         </label>
       </div>
-      <p class="note">제니엘 데이터는 파일 내 존재하는 일자 컬럼 전체를 월 단위로 합산합니다. 예: 26Y05M01D~26Y05M20D.</p>
+      <p class="note">선택한 월의 날짜 시트만 합산합니다. 코스트코만 반영하며 스마트폰, 태블릿, 노트북(PC), 웨어러블(웨어러벌), 버즈, 모바일 액세서리는 CE 매출에서 제외합니다. 목표는 해당 월 파일을 업로드하세요.</p>
     </section>
 
     <section class="panel action-panel">
@@ -121,3 +121,4 @@
   <script src="./app.js"></script>
 </body>
 </html>
+
